@@ -1,0 +1,133 @@
+### Test if Oumie server is running
+GET http://localhost:3000
+
+### Get all students
+GET http://localhost:3000/students
+
+### Sign up Colin
+POST http://localhost:3000/signup
+Content-Type: application/json
+
+{
+    "name": "Colin",
+    "email": "colin@university.edu",
+    "university": "University of Montana"
+}
+
+### Sign up Sarah
+POST http://localhost:3000/signup
+Content-Type: application/json
+
+{
+    "name": "Sarah",
+    "email": "sarah@university.edu",
+    "university": "Arizona State"
+}
+
+### Get specific student (change ID as needed)
+GET http://localhost:3000/student/1
+
+### Add an essay assignment for Colin (ID: 1)
+POST http://localhost:3000/assignment
+Content-Type: application/json
+
+{
+    "studentId": 1,
+    "title": "Constitutional Law Essay",
+    "description": "Analyze the impact of Miranda v. Arizona",
+    "assignmentType": "essay",
+    "dueDate": "2025-12-15T23:59:00",
+    "wordCount": 2000
+}
+
+### Add a problem set for Sarah (ID: 2)
+POST http://localhost:3000/assignment
+Content-Type: application/json
+
+{
+    "studentId": 2,
+    "title": "Calculus Problem Set #7",
+    "description": "Integration problems",
+    "assignmentType": "problem_set",
+    "dueDate": "2025-12-10T09:00:00",
+    "problemCount": 25
+}
+
+### Add reading assignment for Colin
+POST http://localhost:3000/assignment
+Content-Type: application/json
+
+{
+    "studentId": 1,
+    "title": "Constitutional Law Reading",
+    "description": "Chapter 12-15",
+    "assignmentType": "reading",
+    "dueDate": "2025-12-08T08:00:00",
+    "pageCount": 120
+}
+
+### Get all assignments for Colin (ID: 1)
+GET http://localhost:3000/student/1/assignments
+
+### Get all assignments for Sarah (ID: 2)
+GET http://localhost:3000/student/2/assignments
+
+### Calculate time for essay (Colin - ID: 1)
+POST http://localhost:3000/calculate-time
+Content-Type: application/json
+
+{
+    "studentId": 1,
+    "assignmentType": "essay",
+    "wordCount": 2000
+}
+
+### Calculate time for problem set (Sarah - ID: 2)
+POST http://localhost:3000/calculate-time
+Content-Type: application/json
+
+{
+    "studentId": 2,
+    "assignmentType": "problem_set",
+    "problemCount": 25
+}
+
+### Calculate time for reading assignment (Colin - ID: 1)
+POST http://localhost:3000/calculate-time
+Content-Type: application/json
+
+{
+    "studentId": 1,
+    "assignmentType": "reading",
+    "pageCount": 120
+}
+
+### Mark assignment complete (change assignment ID as needed)
+POST http://localhost:3000/assignment/1/complete
+Content-Type: application/json
+
+{
+    "actualHours": 6.5
+}
+
+### Update Colin's profile (adjust his speeds based on real performance)
+PUT http://localhost:3000/student/1/profile
+Content-Type: application/json
+
+{
+    "writingSpeed": 280,
+    "readingSpeed": 35,
+    "problemSolvingSpeed": 6,
+    "procrastinationFactor": 1.2
+}
+
+### Update Sarah's profile
+PUT http://localhost:3000/student/2/profile
+Content-Type: application/json
+
+{
+    "writingSpeed": 220,
+    "readingSpeed": 25,
+    "problemSolvingSpeed": 8,
+    "procrastinationFactor": 1.1
+}
