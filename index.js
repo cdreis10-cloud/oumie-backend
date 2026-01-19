@@ -12,18 +12,14 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL
 });
 
-// Test database connection
-pool.query('SELECT NOW()', (err, res) => {
-    if (err) {
-        console.error('❌ Database connection failed:', err);
-    } else {
-        console.log('✅ Database connected successfully!');
-    }
-});
-
 // Middleware
 app.use(express.json());
 app.use(require('cors')());
+
+// Health check route (for Render deployment)
+app.get('/health', (req, res) => {
+    res.status(200).send('OK');
+});
 
 // Homepage route
 app.get('/', async (req, res) => {
@@ -590,11 +586,20 @@ app.delete('/assignment/:id', async (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log('\n🚀 ================================');
     console.log('✅ Oumie Server is RUNNING!');
-    console.log(`📍 http://localhost:${PORT}`);
+    console.log(`📍 Server running on port ${PORT}`);
     console.log('🗄️  Database: PostgreSQL');
     console.log('🔌 Extension endpoints ready!');
     console.log('================================\n');
+
+    // Test database connection after server starts
+    pool.query('SELECT NOW()', (err, res) => {
+        if (err) {
+            console.error('❌ Database connection failed:', err);
+        } else {
+            console.log('✅ Database connected successfully!');
+        }
+    });
 });
