@@ -1,6 +1,7 @@
 // Oumie Server - Now with Real Database!
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const { Pool } = require('pg');
 const { awardBadge, hasAssignmentBadge, BADGES } = require('./badgeSystem');
 
@@ -12,24 +13,38 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL
 });
 
-// Middleware
-app.use(express.json());
-
-const cors = require('cors');
+// CORS must be FIRST, before any routes
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'http://localhost:3001',
-    'https://oumie-dashboard.vercel.app',
-    /^chrome-extension:\/\//
-  ],
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+
+    // Allow these origins
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'https://oumie-dashboard.vercel.app'
+    ];
+
+    // Allow Chrome extensions
+    if (origin.startsWith('chrome-extension://')) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // Allow all for now during development
+    callback(null, true);
+  },
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Handle preflight requests
-app.options('*', cors());
+// Then JSON parser
+app.use(express.json());
 
 // Health check route (for Render deployment)
 app.get('/health', (req, res) => {
