@@ -4,6 +4,19 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const { awardBadge, hasAssignmentBadge, BADGES } = require('./badgeSystem');
+const StudentStatusDetector = require('./services/studentStatusDetector');
+const {
+  authLimiter,
+  generateCodename,
+  hashPassword,
+  comparePassword,
+  generateAccessToken,
+  generateRefreshToken,
+  verifyRefreshToken,
+  authenticateToken,
+  validatePassword,
+  validateEmail
+} = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,6 +25,9 @@ const PORT = process.env.PORT || 3000;
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL
 });
+
+// Initialize status detector with database connection
+const statusDetector = new StudentStatusDetector(pool);
 
 // CORS must be FIRST, before any routes
 app.use(cors({
@@ -74,25 +90,275 @@ app.get('/', async (req, res) => {
     }
 });
 
-// Student signup - NOW SAVES TO DATABASE!
+// ============================================
+// AUTHENTICATION ENDPOINTS
+// ============================================
+
+// Signup endpoint with password
+app.post('/auth/signup', authLimiter, async (req, res) => {
+    const { name, email, password, university } = req.body;
+
+    try {
+        // Validate input
+        if (!name || !email || !password) {
+            return res.status(400).json({ error: 'Name, email, and password are required' });
+        }
+
+        // Validate email format
+        if (!validateEmail(email)) {
+            return res.status(400).json({ error: 'Invalid email format' });
+        }
+
+        // Validate password strength
+        const passwordValidation = validatePassword(password);
+        if (!passwordValidation.isValid) {
+            return res.status(400).json({
+                error: 'Password does not meet requirements',
+                details: passwordValidation.errors
+            });
+        }
+
+        // Check if email already exists
+        const existingUser = await pool.query(
+            'SELECT id FROM students WHERE email = $1',
+            [email]
+        );
+
+        if (existingUser.rows.length > 0) {
+            return res.status(400).json({ error: 'Email already registered' });
+        }
+
+        // Hash password
+        const passwordHash = await hashPassword(password);
+
+        // Generate unique codename
+        let codename = generateCodename();
+        let codenameExists = true;
+
+        // Ensure codename is unique
+        while (codenameExists) {
+            const check = await pool.query(
+                'SELECT id FROM students WHERE codename = $1',
+                [codename]
+            );
+            if (check.rows.length === 0) {
+                codenameExists = false;
+            } else {
+                codename = generateCodename();
+            }
+        }
+
+        // Insert student into database
+        const studentResult = await pool.query(
+            'INSERT INTO students (name, email, password_hash, university, codename, email_verified) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, university, codename, created_at',
+            [name, email, passwordHash, university, codename, false]
+        );
+
+        const newStudent = studentResult.rows[0];
+
+        // Create default profile for this student
+        await pool.query(
+            'INSERT INTO student_profiles (student_id) VALUES ($1)',
+            [newStudent.id]
+        );
+
+        // Generate tokens
+        const token = generateAccessToken(newStudent.id, newStudent.email, false);
+        const refreshToken = generateRefreshToken(newStudent.id, newStudent.email);
+
+        // Store refresh token
+        await pool.query(
+            'UPDATE students SET refresh_token = $1, last_login = NOW() WHERE id = $2',
+            [refreshToken, newStudent.id]
+        );
+
+        res.status(201).json({
+            message: 'Account created successfully',
+            token,
+            refreshToken,
+            user: {
+                id: newStudent.id,
+                name: newStudent.name,
+                email: newStudent.email,
+                university: newStudent.university,
+                codename: newStudent.codename
+            }
+        });
+    } catch (error) {
+        console.error('Signup error:', error);
+        res.status(500).json({ error: 'Failed to create account', details: error.message });
+    }
+});
+
+// Login endpoint
+app.post('/auth/login', authLimiter, async (req, res) => {
+    const { email, password, rememberMe } = req.body;
+
+    try {
+        // Validate input
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email and password are required' });
+        }
+
+        // Find user by email
+        const result = await pool.query(
+            'SELECT id, name, email, password_hash, university, codename FROM students WHERE email = $1',
+            [email]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+
+        const user = result.rows[0];
+
+        // Check if password hash exists (for backward compatibility with old accounts)
+        if (!user.password_hash) {
+            return res.status(401).json({
+                error: 'Account not set up with password. Please contact support or create a new account.'
+            });
+        }
+
+        // Compare password
+        const isPasswordValid = await comparePassword(password, user.password_hash);
+
+        if (!isPasswordValid) {
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+
+        // Generate tokens (with longer expiry if rememberMe is true)
+        const token = generateAccessToken(user.id, user.email, rememberMe);
+        const refreshToken = generateRefreshToken(user.id, user.email);
+
+        // Store refresh token and update last login
+        await pool.query(
+            'UPDATE students SET refresh_token = $1, last_login = NOW() WHERE id = $2',
+            [refreshToken, user.id]
+        );
+
+        res.json({
+            message: 'Login successful',
+            token,
+            refreshToken,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                university: user.university,
+                codename: user.codename
+            }
+        });
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ error: 'Login failed', details: error.message });
+    }
+});
+
+// Refresh token endpoint
+app.post('/auth/refresh', async (req, res) => {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+        return res.status(400).json({ error: 'Refresh token required' });
+    }
+
+    try {
+        // Verify refresh token
+        const decoded = verifyRefreshToken(refreshToken);
+
+        if (!decoded) {
+            return res.status(403).json({ error: 'Invalid or expired refresh token' });
+        }
+
+        // Check if token exists in database
+        const result = await pool.query(
+            'SELECT id, email, name, university, codename FROM students WHERE id = $1 AND refresh_token = $2',
+            [decoded.userId, refreshToken]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(403).json({ error: 'Invalid refresh token' });
+        }
+
+        const user = result.rows[0];
+
+        // Generate new access token
+        const newAccessToken = generateAccessToken(user.id, user.email, false);
+
+        res.json({
+            token: newAccessToken,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                university: user.university,
+                codename: user.codename
+            }
+        });
+    } catch (error) {
+        console.error('Token refresh error:', error);
+        res.status(500).json({ error: 'Failed to refresh token' });
+    }
+});
+
+// Logout endpoint
+app.post('/auth/logout', authenticateToken, async (req, res) => {
+    try {
+        // Clear refresh token from database
+        await pool.query(
+            'UPDATE students SET refresh_token = NULL WHERE id = $1',
+            [req.user.userId]
+        );
+
+        res.json({ message: 'Logged out successfully' });
+    } catch (error) {
+        console.error('Logout error:', error);
+        res.status(500).json({ error: 'Logout failed' });
+    }
+});
+
+// Get current user info (protected route example)
+app.get('/auth/me', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT id, name, email, university, codename, created_at FROM students WHERE id = $1',
+            [req.user.userId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        res.json({ user: result.rows[0] });
+    } catch (error) {
+        console.error('Get user error:', error);
+        res.status(500).json({ error: 'Failed to get user info' });
+    }
+});
+
+// ============================================
+// LEGACY ENDPOINTS (for backward compatibility)
+// ============================================
+
+// Student signup - OLD VERSION (kept for backward compatibility)
 app.post('/signup', async (req, res) => {
     const { name, email, university } = req.body;
-    
+
     try {
         // Insert student into database
         const studentResult = await pool.query(
             'INSERT INTO students (name, email, university) VALUES ($1, $2, $3) RETURNING *',
             [name, email, university]
         );
-        
+
         const newStudent = studentResult.rows[0];
-        
+
         // Create default profile for this student
         await pool.query(
             'INSERT INTO student_profiles (student_id) VALUES ($1)',
             [newStudent.id]
         );
-        
+
         res.json({
             message: 'Welcome to Oumie!',
             student: {
@@ -386,20 +652,20 @@ app.put('/student/:id/profile', async (req, res) => {
 
 // Start time tracking session
 app.post('/time-log/start', async (req, res) => {
-    const { studentId, assignmentTitle, assignmentUrl, startTime } = req.body;
-    
+    const { studentId, assignmentTitle, assignmentUrl, startTime, siteName } = req.body;
+
     try {
         // Find or create assignment
         let assignment = await pool.query(
             'SELECT * FROM assignments WHERE student_id = $1 AND canvas_url = $2',
             [studentId, assignmentUrl]
         );
-        
+
         let assignmentId;
         if (assignment.rows.length === 0) {
             // Create new assignment automatically
             const newAssignment = await pool.query(`
-                INSERT INTO assignments 
+                INSERT INTO assignments
                 (student_id, title, due_date, canvas_url, estimated_hours)
                 VALUES ($1, $2, NOW() + INTERVAL '7 days', $3, 5.0)
                 RETURNING id
@@ -408,15 +674,20 @@ app.post('/time-log/start', async (req, res) => {
         } else {
             assignmentId = assignment.rows[0].id;
         }
-        
-        // Create time log entry
+
+        // Create time log entry with site_name and assignment_title for detection
         const result = await pool.query(`
-            INSERT INTO time_logs 
-            (student_id, assignment_id, session_start, is_active)
-            VALUES ($1, $2, $3, true)
+            INSERT INTO time_logs
+            (student_id, assignment_id, session_start, is_active, site_name, assignment_title)
+            VALUES ($1, $2, $3, true, $4, $5)
             RETURNING *
-        `, [studentId, assignmentId, startTime]);
-        
+        `, [studentId, assignmentId, startTime, siteName, assignmentTitle]);
+
+        // Record LMS activity for status detection
+        if (siteName) {
+            await statusDetector.recordLMSActivity(studentId, siteName);
+        }
+
         res.json({
             message: 'Session started',
             log: result.rows[0]
@@ -597,21 +868,60 @@ app.post('/student/:studentId/assignments', async (req, res) => {
 app.delete('/assignment/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Delete associated time logs first (foreign key constraint)
     await pool.query('DELETE FROM time_logs WHERE assignment_id = $1', [id]);
-    
+
     // Delete assignment
     const result = await pool.query('DELETE FROM assignments WHERE id = $1 RETURNING *', [id]);
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Assignment not found' });
     }
-    
+
     res.json({ message: 'Assignment deleted successfully', assignment: result.rows[0] });
   } catch (error) {
     console.error('Error deleting assignment:', error);
     res.status(500).json({ error: 'Failed to delete assignment' });
+  }
+});
+
+// ============================================
+// STUDENT STATUS DETECTION ENDPOINTS
+// ============================================
+
+// Manually trigger detection for all students (admin only, for testing)
+app.post('/admin/detect-graduated', async (req, res) => {
+  try {
+    const results = await statusDetector.analyzeAllStudents();
+    res.json({
+      success: true,
+      message: `Analyzed students, found ${results.length} status changes`,
+      changes: results
+    });
+  } catch (error) {
+    console.error('Detection error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Check single student status
+app.get('/student/:id/status', async (req, res) => {
+  try {
+    const result = await statusDetector.analyzeStudent(parseInt(req.params.id));
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get university status summary
+app.get('/university/:id/student-status-summary', async (req, res) => {
+  try {
+    const summary = await statusDetector.getUniversityStatusSummary(parseInt(req.params.id));
+    res.json(summary);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
