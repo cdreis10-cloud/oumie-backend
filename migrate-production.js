@@ -22,7 +22,12 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
-const pool = new Pool({ connectionString: DATABASE_URL });
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
 
 async function runMigration() {
   try {

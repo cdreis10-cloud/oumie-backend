@@ -729,7 +729,7 @@ app.post('/time-log/end', async (req, res) => {
 // Get student stats
 app.get('/student/:id/stats', async (req, res) => {
     const studentId = req.params.id;
-    
+
     try {
         // Today's hours
         const todayResult = await pool.query(`
@@ -738,7 +738,15 @@ app.get('/student/:id/stats', async (req, res) => {
             WHERE student_id = $1
               AND DATE(session_start) = CURRENT_DATE
         `, [studentId]);
-        
+
+        // Yesterday's hours (for comparison)
+        const yesterdayResult = await pool.query(`
+            SELECT COALESCE(SUM(duration_minutes), 0) / 60.0 as hours
+            FROM time_logs
+            WHERE student_id = $1
+              AND DATE(session_start) = CURRENT_DATE - INTERVAL '1 day'
+        `, [studentId]);
+
         // This week's hours
         const weekResult = await pool.query(`
             SELECT COALESCE(SUM(duration_minutes), 0) / 60.0 as hours
@@ -746,15 +754,165 @@ app.get('/student/:id/stats', async (req, res) => {
             WHERE student_id = $1
               AND session_start >= DATE_TRUNC('week', CURRENT_DATE)
         `, [studentId]);
-        
+
+        // Last week's hours (for comparison)
+        const lastWeekResult = await pool.query(`
+            SELECT COALESCE(SUM(duration_minutes), 0) / 60.0 as hours
+            FROM time_logs
+            WHERE student_id = $1
+              AND session_start >= DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '1 week'
+              AND session_start < DATE_TRUNC('week', CURRENT_DATE)
+        `, [studentId]);
+
+        // Total hours all time
+        const totalResult = await pool.query(`
+            SELECT COALESCE(SUM(duration_minutes), 0) / 60.0 as hours
+            FROM time_logs
+            WHERE student_id = $1
+        `, [studentId]);
+
+        // Current streak (consecutive days with study time)
+        const streakResult = await pool.query(`
+            WITH daily_activity AS (
+                SELECT DISTINCT DATE(session_start) as study_date
+                FROM time_logs
+                WHERE student_id = $1
+                  AND session_start >= CURRENT_DATE - INTERVAL '30 days'
+                ORDER BY study_date DESC
+            ),
+            streak_calc AS (
+                SELECT
+                    study_date,
+                    study_date - ROW_NUMBER() OVER (ORDER BY study_date DESC)::int as streak_group
+                FROM daily_activity
+            )
+            SELECT COUNT(*) as streak
+            FROM streak_calc
+            WHERE streak_group = (
+                SELECT streak_group
+                FROM streak_calc
+                LIMIT 1
+            )
+        `, [studentId]);
+
+        // Assignments count
+        const assignmentsResult = await pool.query(`
+            SELECT
+                COUNT(*) FILTER (WHERE is_completed = false) as active,
+                COUNT(*) FILTER (WHERE is_completed = false AND due_date <= CURRENT_DATE + INTERVAL '7 days') as due_this_week
+            FROM assignments
+            WHERE student_id = $1
+        `, [studentId]);
+
+        // Focus score (percentage of sessions that weren't paused)
+        const focusResult = await pool.query(`
+            SELECT
+                CASE
+                    WHEN COUNT(*) = 0 THEN 0
+                    ELSE ROUND((COUNT(*) FILTER (WHERE was_focused IS NULL OR was_focused = true)::float / COUNT(*)) * 100)
+                END as focus_score
+            FROM time_logs
+            WHERE student_id = $1
+              AND session_start >= CURRENT_DATE - INTERVAL '7 days'
+        `, [studentId]);
+
+        // Weekly breakdown (last 7 days)
+        const weeklyDataResult = await pool.query(`
+            SELECT
+                TO_CHAR(date_series.day, 'Dy') as day,
+                COALESCE(SUM(tl.duration_minutes), 0) / 60.0 as hours
+            FROM (
+                SELECT generate_series(
+                    DATE_TRUNC('week', CURRENT_DATE),
+                    DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '6 days',
+                    '1 day'::interval
+                )::date as day
+            ) date_series
+            LEFT JOIN time_logs tl ON DATE(tl.session_start) = date_series.day AND tl.student_id = $1
+            GROUP BY date_series.day
+            ORDER BY date_series.day
+        `, [studentId]);
+
+        // Recent activity (last 5 sessions)
+        const recentActivityResult = await pool.query(`
+            SELECT
+                a.title,
+                a.assignment_type,
+                tl.duration_minutes / 60.0 as hours,
+                tl.session_start
+            FROM time_logs tl
+            LEFT JOIN assignments a ON tl.assignment_id = a.id
+            WHERE tl.student_id = $1
+              AND tl.duration_minutes > 0
+            ORDER BY tl.session_start DESC
+            LIMIT 5
+        `, [studentId]);
+
+        const todayHours = parseFloat(todayResult.rows[0].hours) || 0;
+        const yesterdayHours = parseFloat(yesterdayResult.rows[0].hours) || 0;
+        const weekHours = parseFloat(weekResult.rows[0].hours) || 0;
+        const lastWeekHours = parseFloat(lastWeekResult.rows[0].hours) || 0;
+
         res.json({
-            todayHours: parseFloat(todayResult.rows[0].hours) || 0,
-            weekHours: parseFloat(weekResult.rows[0].hours) || 0
+            todayHours: todayHours,
+            yesterdayHours: yesterdayHours,
+            todayChange: todayHours - yesterdayHours,
+            weekHours: weekHours,
+            lastWeekHours: lastWeekHours,
+            weekChange: lastWeekHours > 0 ? ((weekHours - lastWeekHours) / lastWeekHours * 100) : 0,
+            totalHours: parseFloat(totalResult.rows[0].hours) || 0,
+            currentStreak: parseInt(streakResult.rows[0]?.streak) || 0,
+            assignments: {
+                total: parseInt(assignmentsResult.rows[0]?.active) || 0,
+                dueThisWeek: parseInt(assignmentsResult.rows[0]?.due_this_week) || 0
+            },
+            focusScore: parseInt(focusResult.rows[0]?.focus_score) || 0,
+            weeklyData: weeklyDataResult.rows.map(row => ({
+                day: row.day,
+                hours: parseFloat(row.hours) || 0
+            })),
+            recentActivity: recentActivityResult.rows.map(row => ({
+                title: row.title || 'Study Session',
+                hours: parseFloat(row.hours) || 0,
+                when: formatTimeAgo(row.session_start),
+                icon: getIconForType(row.assignment_type)
+            }))
         });
     } catch (error) {
+        console.error('Stats error:', error);
         res.status(500).json({ error: 'Failed to get stats', details: error.message });
     }
 });
+
+// Helper function to format time ago
+function formatTimeAgo(date) {
+    const now = new Date();
+    const then = new Date(date);
+    const diffMs = now - then;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffDays > 0) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+    if (diffHours > 0) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+    if (diffMins > 0) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
+    return 'Just now';
+}
+
+// Helper function to get icon for assignment type
+function getIconForType(type) {
+    const icons = {
+        'essay': '📝',
+        'research_paper': '📚',
+        'lab_report': '🧪',
+        'problem_set': '📐',
+        'reading': '📖',
+        'exam_prep': '✏️',
+        'presentation': '🎤',
+        'coding_assignment': '💻'
+    };
+    return icons[type] || '📄';
+}
 
 // Get current assignment progress (for active tracking)
 app.get('/assignment/:assignmentId/progress', async (req, res) => {
