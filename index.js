@@ -1083,6 +1083,354 @@ app.get('/university/:id/student-status-summary', async (req, res) => {
   }
 });
 
+// ============================================
+// NEW DASHBOARD ENDPOINTS
+// ============================================
+
+// Learning Fingerprint - analyze study patterns
+app.get('/student/:id/learning-fingerprint', async (req, res) => {
+  const studentId = req.params.id;
+
+  try {
+    // Get hour-by-hour productivity
+    const hourlyData = await pool.query(`
+      SELECT
+        EXTRACT(HOUR FROM session_start) as hour,
+        COUNT(*) as session_count,
+        AVG(duration_minutes) as avg_duration,
+        SUM(duration_minutes) as total_minutes
+      FROM time_logs
+      WHERE student_id = $1 AND duration_minutes > 0
+      GROUP BY EXTRACT(HOUR FROM session_start)
+      ORDER BY total_minutes DESC
+    `, [studentId]);
+
+    // Get day-of-week productivity
+    const dayData = await pool.query(`
+      SELECT
+        EXTRACT(DOW FROM session_start) as day_num,
+        COUNT(*) as session_count,
+        AVG(duration_minutes) as avg_duration,
+        SUM(duration_minutes) as total_minutes
+      FROM time_logs
+      WHERE student_id = $1 AND duration_minutes > 0
+      GROUP BY EXTRACT(DOW FROM session_start)
+      ORDER BY total_minutes DESC
+    `, [studentId]);
+
+    // Average session length
+    const avgSession = await pool.query(`
+      SELECT AVG(duration_minutes) as avg_minutes
+      FROM time_logs
+      WHERE student_id = $1 AND duration_minutes > 0
+    `, [studentId]);
+
+    // Map day numbers to names
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+    const peakHours = hourlyData.rows.slice(0, 3).map(row => ({
+      hour: parseInt(row.hour),
+      displayHour: `${parseInt(row.hour) % 12 || 12}${parseInt(row.hour) < 12 ? 'AM' : 'PM'}`,
+      totalMinutes: parseFloat(row.total_minutes),
+      sessionCount: parseInt(row.session_count)
+    }));
+
+    const mostProductiveDay = dayData.rows.length > 0 ? {
+      day: dayNames[parseInt(dayData.rows[0].day_num)],
+      totalMinutes: parseFloat(dayData.rows[0].total_minutes),
+      sessionCount: parseInt(dayData.rows[0].session_count)
+    } : null;
+
+    res.json({
+      peakHours,
+      mostProductiveDay,
+      averageSessionLength: parseFloat(avgSession.rows[0].avg_minutes || 0),
+      hourlyBreakdown: hourlyData.rows.map(row => ({
+        hour: parseInt(row.hour),
+        displayHour: `${parseInt(row.hour) % 12 || 12}${parseInt(row.hour) < 12 ? 'AM' : 'PM'}`,
+        totalHours: (parseFloat(row.total_minutes) / 60).toFixed(1)
+      })),
+      weeklyBreakdown: dayData.rows.map(row => ({
+        day: dayNames[parseInt(row.day_num)],
+        totalHours: (parseFloat(row.total_minutes) / 60).toFixed(1)
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch learning fingerprint', details: error.message });
+  }
+});
+
+// Academic DNA - subject breakdown and deep work analysis
+app.get('/student/:id/academic-dna', async (req, res) => {
+  const studentId = req.params.id;
+
+  try {
+    // Get subjects ranked by time spent
+    const subjectData = await pool.query(`
+      SELECT
+        a.subject,
+        COUNT(DISTINCT a.id) as assignment_count,
+        SUM(tl.duration_minutes) as total_minutes,
+        AVG(tl.duration_minutes) as avg_session_length
+      FROM assignments a
+      JOIN time_logs tl ON tl.assignment_id = a.id
+      WHERE a.student_id = $1 AND tl.duration_minutes > 0
+      GROUP BY a.subject
+      ORDER BY total_minutes DESC
+    `, [studentId]);
+
+    // Find longest sessions (deep work - "loses track of time")
+    const deepWorkSessions = await pool.query(`
+      SELECT
+        a.title,
+        a.subject,
+        tl.duration_minutes,
+        tl.session_start
+      FROM time_logs tl
+      JOIN assignments a ON a.id = tl.assignment_id
+      WHERE tl.student_id = $1 AND tl.duration_minutes > 60
+      ORDER BY tl.duration_minutes DESC
+      LIMIT 5
+    `, [studentId]);
+
+    // Calculate efficiency (sessions > 30 min vs total sessions)
+    const efficiencyData = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE duration_minutes >= 30) as focused_sessions,
+        COUNT(*) as total_sessions
+      FROM time_logs
+      WHERE student_id = $1 AND duration_minutes > 0
+    `, [studentId]);
+
+    const efficiency = efficiencyData.rows[0].total_sessions > 0
+      ? Math.round((efficiencyData.rows[0].focused_sessions / efficiencyData.rows[0].total_sessions) * 100)
+      : 0;
+
+    res.json({
+      subjects: subjectData.rows.map(row => ({
+        name: row.subject || 'General',
+        totalHours: (parseFloat(row.total_minutes) / 60).toFixed(1),
+        assignmentCount: parseInt(row.assignment_count),
+        avgSessionLength: parseFloat(row.avg_session_length).toFixed(0)
+      })),
+      deepWorkSessions: deepWorkSessions.rows.map(row => ({
+        title: row.title,
+        subject: row.subject || 'General',
+        duration: `${Math.floor(row.duration_minutes / 60)}h ${row.duration_minutes % 60}m`,
+        date: new Date(row.session_start).toLocaleDateString()
+      })),
+      focusEfficiency: efficiency,
+      totalSubjects: subjectData.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch academic DNA', details: error.message });
+  }
+});
+
+// Leaderboard - weekly rankings
+app.get('/leaderboard/weekly', async (req, res) => {
+  try {
+    const leaderboard = await pool.query(`
+      SELECT
+        s.id,
+        s.codename,
+        s.university,
+        COALESCE(SUM(tl.duration_minutes), 0) / 60.0 as weekly_hours,
+        COUNT(DISTINCT DATE(tl.session_start)) as active_days
+      FROM students s
+      LEFT JOIN time_logs tl ON tl.student_id = s.id
+        AND tl.session_start >= DATE_TRUNC('week', CURRENT_DATE)
+      GROUP BY s.id, s.codename, s.university
+      ORDER BY weekly_hours DESC
+      LIMIT 100
+    `);
+
+    res.json({
+      leaderboard: leaderboard.rows.map((row, index) => ({
+        rank: index + 1,
+        codename: row.codename || `Student ${row.id}`,
+        university: row.university || 'Unknown',
+        weeklyHours: parseFloat(row.weekly_hours).toFixed(1),
+        activeDays: parseInt(row.active_days)
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch leaderboard', details: error.message });
+  }
+});
+
+// Student rank
+app.get('/student/:id/rank', async (req, res) => {
+  const studentId = req.params.id;
+
+  try {
+    // Get student's weekly hours
+    const studentHours = await pool.query(`
+      SELECT COALESCE(SUM(duration_minutes), 0) / 60.0 as weekly_hours
+      FROM time_logs
+      WHERE student_id = $1
+        AND session_start >= DATE_TRUNC('week', CURRENT_DATE)
+    `, [studentId]);
+
+    const myHours = parseFloat(studentHours.rows[0].weekly_hours);
+
+    // Count students with more hours
+    const rankResult = await pool.query(`
+      SELECT COUNT(DISTINCT student_id) + 1 as rank
+      FROM time_logs
+      WHERE session_start >= DATE_TRUNC('week', CURRENT_DATE)
+      GROUP BY student_id
+      HAVING SUM(duration_minutes) / 60.0 > $1
+    `, [myHours]);
+
+    // Total active students this week
+    const totalStudents = await pool.query(`
+      SELECT COUNT(DISTINCT student_id) as total
+      FROM time_logs
+      WHERE session_start >= DATE_TRUNC('week', CURRENT_DATE)
+    `);
+
+    const rank = rankResult.rows.length > 0 ? parseInt(rankResult.rows[0].rank) : 1;
+    const total = parseInt(totalStudents.rows[0].total) || 1;
+    const percentile = Math.round(((total - rank + 1) / total) * 100);
+
+    res.json({
+      rank,
+      totalStudents: total,
+      percentile,
+      weeklyHours: myHours.toFixed(1)
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch rank', details: error.message });
+  }
+});
+
+// Insights - comprehensive analytics
+app.get('/student/:id/insights', async (req, res) => {
+  const studentId = req.params.id;
+
+  try {
+    // Total study time
+    const totalTime = await pool.query(`
+      SELECT COALESCE(SUM(duration_minutes), 0) / 60.0 as total_hours
+      FROM time_logs
+      WHERE student_id = $1
+    `, [studentId]);
+
+    // Average session length
+    const avgSession = await pool.query(`
+      SELECT AVG(duration_minutes) as avg_minutes
+      FROM time_logs
+      WHERE student_id = $1 AND duration_minutes > 0
+    `, [studentId]);
+
+    // Current streak
+    const streakData = await pool.query(`
+      SELECT DATE(session_start) as study_date
+      FROM time_logs
+      WHERE student_id = $1 AND duration_minutes > 0
+      GROUP BY DATE(session_start)
+      ORDER BY study_date DESC
+      LIMIT 30
+    `, [studentId]);
+
+    let currentStreak = 0;
+    if (streakData.rows.length > 0) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      let checkDate = new Date(streakData.rows[0].study_date);
+
+      for (let i = 0; i < streakData.rows.length; i++) {
+        const studyDate = new Date(streakData.rows[i].study_date);
+        studyDate.setHours(0, 0, 0, 0);
+
+        const dayDiff = Math.floor((checkDate - studyDate) / (1000 * 60 * 60 * 24));
+
+        if (dayDiff === 0) {
+          currentStreak++;
+          checkDate.setDate(checkDate.getDate() - 1);
+        } else {
+          break;
+        }
+      }
+    }
+
+    // Time by assignment type/subject
+    const bySubject = await pool.query(`
+      SELECT
+        a.subject,
+        SUM(tl.duration_minutes) / 60.0 as hours
+      FROM time_logs tl
+      JOIN assignments a ON a.id = tl.assignment_id
+      WHERE tl.student_id = $1 AND tl.duration_minutes > 0
+      GROUP BY a.subject
+      ORDER BY hours DESC
+      LIMIT 5
+    `, [studentId]);
+
+    // Recently completed work
+    const recentWork = await pool.query(`
+      SELECT
+        a.title,
+        a.subject,
+        a.completed_at,
+        SUM(tl.duration_minutes) / 60.0 as total_hours
+      FROM assignments a
+      LEFT JOIN time_logs tl ON tl.assignment_id = a.id
+      WHERE a.student_id = $1 AND a.completed_at IS NOT NULL
+      GROUP BY a.id, a.title, a.subject, a.completed_at
+      ORDER BY a.completed_at DESC
+      LIMIT 5
+    `, [studentId]);
+
+    res.json({
+      totalStudyTime: parseFloat(totalTime.rows[0].total_hours).toFixed(1),
+      averageSessionLength: parseFloat(avgSession.rows[0].avg_minutes || 0).toFixed(0),
+      currentStreak,
+      studyTimeBySubject: bySubject.rows.map(row => ({
+        subject: row.subject || 'General',
+        hours: parseFloat(row.hours).toFixed(1)
+      })),
+      recentlyCompleted: recentWork.rows.map(row => ({
+        title: row.title,
+        subject: row.subject || 'General',
+        completedAt: new Date(row.completed_at).toLocaleDateString(),
+        totalHours: parseFloat(row.total_hours || 0).toFixed(1)
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch insights', details: error.message });
+  }
+});
+
+// Update student profile (name, email, university)
+app.put('/student/:id/profile-info', async (req, res) => {
+  const studentId = req.params.id;
+  const { name, email, university } = req.body;
+
+  try {
+    const result = await pool.query(`
+      UPDATE students
+      SET name = COALESCE($1, name),
+          email = COALESCE($2, email),
+          university = COALESCE($3, university)
+      WHERE id = $4
+      RETURNING id, name, email, university, codename
+    `, [name, email, university, studentId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    res.json({
+      message: 'Profile updated successfully',
+      student: result.rows[0]
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update profile', details: error.message });
+  }
+});
+
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
     console.log('\n🚀 ================================');
