@@ -21,6 +21,55 @@ const {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// University domain mapping
+const universityDomains = {
+  'umontana.edu': { name: 'University of Montana', shortName: 'UMontana', id: 1 },
+  'umt.edu': { name: 'University of Montana', shortName: 'UMontana', id: 1 },
+  'ucla.edu': { name: 'University of California, Los Angeles', shortName: 'UCLA', id: 2 },
+  'berkeley.edu': { name: 'UC Berkeley', shortName: 'Berkeley', id: 3 },
+  'stanford.edu': { name: 'Stanford University', shortName: 'Stanford', id: 4 },
+  'harvard.edu': { name: 'Harvard University', shortName: 'Harvard', id: 5 },
+  'mit.edu': { name: 'Massachusetts Institute of Technology', shortName: 'MIT', id: 6 },
+  'utexas.edu': { name: 'University of Texas at Austin', shortName: 'UT Austin', id: 7 },
+  'umich.edu': { name: 'University of Michigan', shortName: 'UMich', id: 8 },
+  'unc.edu': { name: 'University of North Carolina', shortName: 'UNC', id: 9 },
+  'nyu.edu': { name: 'New York University', shortName: 'NYU', id: 10 },
+};
+
+// Helper: extract university info from email
+function getUniversityFromEmail(email) {
+  const domain = email.split('@')[1]?.toLowerCase();
+  if (!domain) return null;
+
+  if (universityDomains[domain]) {
+    return universityDomains[domain];
+  }
+
+  if (domain.endsWith('.edu')) {
+    const name = domain.replace('.edu', '').split('.').pop();
+    const formattedName = name.charAt(0).toUpperCase() + name.slice(1);
+    return {
+      name: `${formattedName} University`,
+      shortName: formattedName,
+      id: null,
+      domain: domain
+    };
+  }
+
+  return null;
+}
+
+// Helper: check if email is .edu
+function isEduEmail(email) {
+  const domain = email.split('@')[1]?.toLowerCase();
+  return domain?.endsWith('.edu') || false;
+}
+
+// Helper: generate 6-digit verification code
+function generateVerificationCode() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
 // Database connection
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL
@@ -91,12 +140,112 @@ app.get('/', async (req, res) => {
 });
 
 // ============================================
+// EMAIL VERIFICATION ENDPOINTS
+// ============================================
+
+// Check if email is a valid .edu address
+app.post('/auth/check-email', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
+  const isEdu = isEduEmail(email);
+  const university = getUniversityFromEmail(email);
+
+  res.json({
+    isValid: isEdu,
+    isEdu: isEdu,
+    university: university,
+    message: isEdu
+      ? `Great! We detected you're from ${university?.name || 'a university'}`
+      : 'Please use your university .edu email address'
+  });
+});
+
+// Send verification code to .edu email
+app.post('/auth/send-verification', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
+  if (!isEduEmail(email)) {
+    return res.status(400).json({ error: 'Please use a valid .edu email address' });
+  }
+
+  const code = generateVerificationCode();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+  try {
+    await pool.query(`
+      INSERT INTO email_verifications (email, code, expires_at)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (email)
+      DO UPDATE SET code = $2, expires_at = $3, verified = false
+    `, [email.toLowerCase(), code, expiresAt]);
+
+    // In production, send actual email here using SendGrid, AWS SES, etc.
+    console.log(`Verification code for ${email}: ${code}`);
+
+    // DEV ONLY - include code in response so signup page can auto-fill
+    // REMOVE devCode in production
+    res.json({
+      success: true,
+      message: 'Verification code sent to your email',
+      devCode: process.env.NODE_ENV === 'production' ? undefined : code
+    });
+  } catch (error) {
+    console.error('Send verification error:', error);
+    res.status(500).json({ error: 'Failed to send verification code' });
+  }
+});
+
+// Verify the 6-digit code
+app.post('/auth/verify-code', async (req, res) => {
+  const { email, code } = req.body;
+
+  if (!email || !code) {
+    return res.status(400).json({ error: 'Email and code are required' });
+  }
+
+  try {
+    const result = await pool.query(`
+      SELECT * FROM email_verifications
+      WHERE email = $1 AND code = $2 AND expires_at > NOW()
+    `, [email.toLowerCase(), code]);
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired code' });
+    }
+
+    // Mark as verified
+    await pool.query(`
+      UPDATE email_verifications SET verified = true WHERE email = $1
+    `, [email.toLowerCase()]);
+
+    const university = getUniversityFromEmail(email);
+
+    res.json({
+      success: true,
+      verified: true,
+      university: university
+    });
+  } catch (error) {
+    console.error('Verify code error:', error);
+    res.status(500).json({ error: 'Verification failed' });
+  }
+});
+
+// ============================================
 // AUTHENTICATION ENDPOINTS
 // ============================================
 
 // Signup endpoint with password
 app.post('/auth/signup', authLimiter, async (req, res) => {
-    const { name, email, password, university } = req.body;
+    const { name, email, password, university, universityDomain } = req.body;
 
     try {
         // Validate input
@@ -128,6 +277,19 @@ app.post('/auth/signup', authLimiter, async (req, res) => {
             return res.status(400).json({ error: 'Email already registered' });
         }
 
+        // Check if email was verified through the verification flow
+        const verificationRecord = await pool.query(
+            'SELECT verified FROM email_verifications WHERE email = $1',
+            [email.toLowerCase()]
+        );
+        const emailVerified = verificationRecord.rows.length > 0 && verificationRecord.rows[0].verified;
+
+        // Extract university info from email domain
+        const detectedUniversity = getUniversityFromEmail(email);
+        const resolvedUniversity = university || detectedUniversity?.name || null;
+        const resolvedDomain = universityDomain || email.split('@')[1]?.toLowerCase() || null;
+        const resolvedUniversityId = detectedUniversity?.id || null;
+
         // Hash password
         const passwordHash = await hashPassword(password);
 
@@ -150,8 +312,10 @@ app.post('/auth/signup', authLimiter, async (req, res) => {
 
         // Insert student into database
         const studentResult = await pool.query(
-            'INSERT INTO students (name, email, password_hash, university, codename, email_verified) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, university, codename, created_at',
-            [name, email, passwordHash, university, codename, false]
+            `INSERT INTO students (name, email, password_hash, university, codename, email_verified, university_domain, university_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             RETURNING id, name, email, university, codename, created_at`,
+            [name, email, passwordHash, resolvedUniversity, codename, emailVerified, resolvedDomain, resolvedUniversityId]
         );
 
         const newStudent = studentResult.rows[0];
