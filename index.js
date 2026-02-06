@@ -37,6 +37,10 @@ const universityDomains = {
   'umich.edu': { name: 'University of Michigan', shortName: 'UMich', id: 8 },
   'unc.edu': { name: 'University of North Carolina', shortName: 'UNC', id: 9 },
   'nyu.edu': { name: 'New York University', shortName: 'NYU', id: 10 },
+  'arizona.edu': { name: 'University of Arizona', shortName: 'UArizona', id: 11 },
+  'email.arizona.edu': { name: 'University of Arizona', shortName: 'UArizona', id: 11 },
+  'asu.edu': { name: 'Arizona State University', shortName: 'ASU', id: 12 },
+  'nau.edu': { name: 'Northern Arizona University', shortName: 'NAU', id: 13 },
 };
 
 // Helper: extract university info from email
