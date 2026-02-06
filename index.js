@@ -18,6 +18,9 @@ const {
   validateEmail
 } = require('./auth');
 
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -177,7 +180,7 @@ app.post('/auth/send-verification', async (req, res) => {
   }
 
   const code = generateVerificationCode();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
   try {
     await pool.query(`
@@ -187,15 +190,58 @@ app.post('/auth/send-verification', async (req, res) => {
       DO UPDATE SET code = $2, expires_at = $3, verified = false
     `, [email.toLowerCase(), code, expiresAt]);
 
-    // In production, send actual email here using SendGrid, AWS SES, etc.
-    console.log(`Verification code for ${email}: ${code}`);
+    // Send real email via Resend
+    if (process.env.RESEND_API_KEY) {
+      try {
+        await resend.emails.send({
+          from: 'Oumie <onboarding@resend.dev>',
+          to: email,
+          subject: 'Your Oumie Verification Code',
+          html: `
+            <!DOCTYPE html>
+            <html>
+            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0a0a0a; color: #ffffff; padding: 40px 20px; margin: 0;">
+              <div style="max-width: 480px; margin: 0 auto; background-color: #171717; border-radius: 12px; padding: 40px; border: 1px solid #262626;">
+                <div style="text-align: center; margin-bottom: 30px;">
+                  <h1 style="color: #3b82f6; font-size: 28px; margin: 0;">🎓 Oumie</h1>
+                  <p style="color: #737373; margin-top: 8px;">Your study companion</p>
+                </div>
 
-    // DEV ONLY - include code in response so signup page can auto-fill
-    // REMOVE devCode in production
+                <h2 style="font-size: 20px; margin-bottom: 16px; text-align: center;">Verify your email</h2>
+
+                <p style="color: #a3a3a3; text-align: center; margin-bottom: 30px;">
+                  Enter this code to complete your signup:
+                </p>
+
+                <div style="background-color: #262626; border-radius: 8px; padding: 20px; text-align: center; margin-bottom: 30px;">
+                  <span style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #ffffff;">${code}</span>
+                </div>
+
+                <p style="color: #737373; font-size: 14px; text-align: center; margin-bottom: 20px;">
+                  This code expires in 10 minutes.
+                </p>
+
+                <hr style="border: none; border-top: 1px solid #262626; margin: 30px 0;">
+
+                <p style="color: #525252; font-size: 12px; text-align: center;">
+                  If you didn't request this code, you can safely ignore this email.
+                </p>
+              </div>
+            </body>
+            </html>
+          `
+        });
+        console.log('Verification email sent to ' + email);
+      } catch (emailError) {
+        console.error('Email send error:', emailError);
+      }
+    } else {
+      console.log('No RESEND_API_KEY - Code for ' + email + ': ' + code);
+    }
+
     res.json({
       success: true,
-      message: 'Verification code sent to your email',
-      devCode: process.env.NODE_ENV === 'production' ? undefined : code
+      message: 'Verification code sent to your email'
     });
   } catch (error) {
     console.error('Send verification error:', error);
