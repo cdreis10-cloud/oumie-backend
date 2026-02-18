@@ -198,7 +198,7 @@ app.post('/auth/send-verification', async (req, res) => {
     if (process.env.RESEND_API_KEY) {
       try {
         await resend.emails.send({
-          from: 'Oumie <onboarding@resend.dev>',
+          from: 'Oumie <noreply@oumie.app>',
           to: email,
           subject: 'Your Oumie Verification Code',
           html: `
