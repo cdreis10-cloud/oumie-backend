@@ -1519,100 +1519,75 @@ app.get('/student/:id/rank', async (req, res) => {
   }
 });
 
-// Insights - comprehensive analytics
+// Insights - peak days, peak hours, top activity
 app.get('/student/:id/insights', async (req, res) => {
   const studentId = req.params.id;
 
   try {
-    // Total study time
-    const totalTime = await pool.query(`
-      SELECT COALESCE(SUM(duration_minutes), 0) / 60.0 as total_hours
-      FROM time_logs
-      WHERE student_id = $1
-    `, [studentId]);
-
-    // Average session length
-    const avgSession = await pool.query(`
-      SELECT AVG(duration_minutes) as avg_minutes
+    // Peak study days (which days of week have most study time)
+    const peakDaysResult = await pool.query(`
+      SELECT
+        TO_CHAR(session_start, 'Day') as day_name,
+        SUM(duration_minutes) as total_minutes
       FROM time_logs
       WHERE student_id = $1 AND duration_minutes > 0
+      GROUP BY TO_CHAR(session_start, 'Day'), EXTRACT(DOW FROM session_start)
+      ORDER BY total_minutes DESC
+      LIMIT 2
     `, [studentId]);
 
-    // Current streak
-    const streakData = await pool.query(`
-      SELECT DATE(session_start) as study_date
+    // Peak hours (what time of day)
+    const peakHoursResult = await pool.query(`
+      SELECT
+        EXTRACT(HOUR FROM session_start) as hour,
+        SUM(duration_minutes) as total_minutes
       FROM time_logs
       WHERE student_id = $1 AND duration_minutes > 0
-      GROUP BY DATE(session_start)
-      ORDER BY study_date DESC
-      LIMIT 30
+      GROUP BY EXTRACT(HOUR FROM session_start)
+      ORDER BY total_minutes DESC
+      LIMIT 1
     `, [studentId]);
 
-    let currentStreak = 0;
-    if (streakData.rows.length > 0) {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      let checkDate = new Date(streakData.rows[0].study_date);
+    // Top activity (most used activity_type or url domain)
+    const topActivityResult = await pool.query(`
+      SELECT
+        COALESCE(activity_type, 'Study Session') as activity,
+        SUM(duration_minutes) as total_minutes
+      FROM time_logs
+      WHERE student_id = $1 AND duration_minutes > 0
+      GROUP BY activity_type
+      ORDER BY total_minutes DESC
+      LIMIT 1
+    `, [studentId]);
 
-      for (let i = 0; i < streakData.rows.length; i++) {
-        const studyDate = new Date(streakData.rows[i].study_date);
-        studyDate.setHours(0, 0, 0, 0);
-
-        const dayDiff = Math.floor((checkDate - studyDate) / (1000 * 60 * 60 * 24));
-
-        if (dayDiff === 0) {
-          currentStreak++;
-          checkDate.setDate(checkDate.getDate() - 1);
-        } else {
-          break;
-        }
-      }
+    // Format peak days
+    let peakDays = null;
+    if (peakDaysResult.rows.length > 0) {
+      peakDays = peakDaysResult.rows.map(r => r.day_name.trim()).join(' & ');
     }
 
-    // Time by assignment type/subject
-    const bySubject = await pool.query(`
-      SELECT
-        a.subject,
-        SUM(tl.duration_minutes) / 60.0 as hours
-      FROM time_logs tl
-      JOIN assignments a ON a.id = tl.assignment_id
-      WHERE tl.student_id = $1 AND tl.duration_minutes > 0
-      GROUP BY a.subject
-      ORDER BY hours DESC
-      LIMIT 5
-    `, [studentId]);
+    // Format peak hours
+    let peakHours = null;
+    if (peakHoursResult.rows.length > 0) {
+      const hour = parseInt(peakHoursResult.rows[0].hour);
+      const endHour = (hour + 2) % 24;
+      const formatHour = (h) => {
+        if (h === 0) return '12am';
+        if (h === 12) return '12pm';
+        return h > 12 ? `${h-12}pm` : `${h}am`;
+      };
+      peakHours = `${formatHour(hour)} - ${formatHour(endHour)}`;
+    }
 
-    // Recently completed work
-    const recentWork = await pool.query(`
-      SELECT
-        a.title,
-        a.subject,
-        a.completed_at,
-        SUM(tl.duration_minutes) / 60.0 as total_hours
-      FROM assignments a
-      LEFT JOIN time_logs tl ON tl.assignment_id = a.id
-      WHERE a.student_id = $1 AND a.completed_at IS NOT NULL
-      GROUP BY a.id, a.title, a.subject, a.completed_at
-      ORDER BY a.completed_at DESC
-      LIMIT 5
-    `, [studentId]);
+    // Format top activity
+    let topActivity = null;
+    if (topActivityResult.rows.length > 0) {
+      topActivity = topActivityResult.rows[0].activity;
+    }
 
-    res.json({
-      totalStudyTime: parseFloat(totalTime.rows[0].total_hours).toFixed(1),
-      averageSessionLength: parseFloat(avgSession.rows[0].avg_minutes || 0).toFixed(0),
-      currentStreak,
-      studyTimeBySubject: bySubject.rows.map(row => ({
-        subject: row.subject || 'General',
-        hours: parseFloat(row.hours).toFixed(1)
-      })),
-      recentlyCompleted: recentWork.rows.map(row => ({
-        title: row.title,
-        subject: row.subject || 'General',
-        completedAt: new Date(row.completed_at).toLocaleDateString(),
-        totalHours: parseFloat(row.total_hours || 0).toFixed(1)
-      }))
-    });
+    res.json({ peakDays, peakHours, topActivity });
   } catch (error) {
+    console.error('Insights error:', error);
     res.status(500).json({ error: 'Failed to fetch insights', details: error.message });
   }
 });
