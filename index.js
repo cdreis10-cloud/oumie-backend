@@ -264,7 +264,7 @@ app.post('/auth/verify-code', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT * FROM email_verifications
-      WHERE email = $1 AND code = $2 AND expires_at > NOW()
+      WHERE LOWER(email) = LOWER($1) AND code = $2 AND expires_at > NOW()
     `, [email.toLowerCase(), code]);
 
     if (result.rows.length === 0) {
@@ -273,7 +273,7 @@ app.post('/auth/verify-code', async (req, res) => {
 
     // Mark as verified
     await pool.query(`
-      UPDATE email_verifications SET verified = true WHERE email = $1
+      UPDATE email_verifications SET verified = true WHERE LOWER(email) = LOWER($1)
     `, [email.toLowerCase()]);
 
     const university = getUniversityFromEmail(email);
@@ -319,7 +319,7 @@ app.post('/auth/signup', authLimiter, async (req, res) => {
 
         // Check if email already exists
         const existingUser = await pool.query(
-            'SELECT id FROM students WHERE email = $1',
+            'SELECT id FROM students WHERE LOWER(email) = LOWER($1)',
             [email]
         );
 
@@ -329,7 +329,7 @@ app.post('/auth/signup', authLimiter, async (req, res) => {
 
         // Check if email was verified through the verification flow
         const verificationRecord = await pool.query(
-            'SELECT verified FROM email_verifications WHERE email = $1',
+            'SELECT verified FROM email_verifications WHERE LOWER(email) = LOWER($1)',
             [email.toLowerCase()]
         );
         const emailVerified = verificationRecord.rows.length > 0 && verificationRecord.rows[0].verified;
@@ -416,7 +416,7 @@ app.post('/auth/login', authLimiter, async (req, res) => {
 
         // Find user by email
         const result = await pool.query(
-            'SELECT id, name, email, password_hash, university, codename FROM students WHERE email = $1',
+            'SELECT id, name, email, password_hash, university, codename FROM students WHERE LOWER(email) = LOWER($1)',
             [email]
         );
 
