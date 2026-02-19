@@ -1075,9 +1075,9 @@ app.get('/student/:id/stats', async (req, res) => {
         // Recent activity (last 5 sessions)
         const recentActivityResult = await pool.query(`
             SELECT
-                a.title,
-                a.assignment_type,
-                tl.duration_minutes / 60.0 as hours,
+                COALESCE(a.title, tl.activity_type, 'Study Session') as title,
+                COALESCE(a.assignment_type, tl.activity_type) as type,
+                tl.duration_minutes,
                 tl.session_start
             FROM time_logs tl
             LEFT JOIN assignments a ON tl.assignment_id = a.id
@@ -1111,10 +1111,10 @@ app.get('/student/:id/stats', async (req, res) => {
                 hours: parseFloat(row.hours) || 0
             })),
             recentActivity: recentActivityResult.rows.map(row => ({
-                title: row.title || 'Study Session',
-                hours: parseFloat(row.hours) || 0,
-                when: formatTimeAgo(row.session_start),
-                icon: getIconForType(row.assignment_type)
+                title: row.title,
+                duration: formatDuration(row.duration_minutes),
+                time: formatTimeAgo(row.session_start),
+                icon: getIconForType(row.type)
             }))
         });
     } catch (error) {
@@ -1138,7 +1138,16 @@ function formatTimeAgo(date) {
     return 'Just now';
 }
 
-// Helper function to get icon for assignment type
+function formatDuration(minutes) {
+    const m = parseFloat(minutes) || 0;
+    if (m < 1) return '< 1 min';
+    if (m < 60) return `${Math.round(m)} min`;
+    const h = Math.floor(m / 60);
+    const rem = Math.round(m % 60);
+    return rem > 0 ? `${h}h ${rem}m` : `${h}h`;
+}
+
+// Helper function to get icon for assignment type or site name
 function getIconForType(type) {
     const icons = {
         'essay': '📝',
@@ -1148,7 +1157,17 @@ function getIconForType(type) {
         'reading': '📖',
         'exam_prep': '✏️',
         'presentation': '🎤',
-        'coding_assignment': '💻'
+        'coding_assignment': '💻',
+        'Google Docs': '📝',
+        'Google Drive': '📁',
+        'Canvas': '📚',
+        'Blackboard': '📋',
+        'Quizlet': '🃏',
+        'Chegg': '📖',
+        'Coursera': '🎓',
+        'Khan Academy': '📐',
+        'edX': '🎓',
+        'Moodle': '📋',
     };
     return icons[type] || '📄';
 }
