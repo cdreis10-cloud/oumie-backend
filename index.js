@@ -911,6 +911,31 @@ app.post('/time-log/start', async (req, res) => {
     }
 });
 
+// Simple time log endpoint
+app.post('/time-log', async (req, res) => {
+  const { studentId, durationMinutes, activityType } = req.body;
+
+  if (!studentId || !durationMinutes || durationMinutes < 1) {
+    return res.status(400).json({ error: 'studentId and durationMinutes required' });
+  }
+
+  try {
+    const result = await pool.query(`
+      INSERT INTO time_logs (student_id, session_start, session_end, duration_minutes, activity_type, is_active)
+      VALUES ($1, NOW() - INTERVAL '1 minute' * $2, NOW(), $2, $3, false)
+      RETURNING *
+    `, [studentId, durationMinutes, activityType || 'Study Session']);
+
+    res.json({
+      message: 'Time logged',
+      log: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Time log error:', error);
+    res.status(500).json({ error: 'Failed to log time', details: error.message });
+  }
+});
+
 // End time tracking session
 app.post('/time-log/end', async (req, res) => {
     const { studentId, durationMinutes } = req.body;
