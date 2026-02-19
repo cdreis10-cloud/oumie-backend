@@ -915,7 +915,7 @@ app.post('/time-log/start', async (req, res) => {
 app.post('/time-log', async (req, res) => {
   const { studentId, durationMinutes, activityType } = req.body;
 
-  if (!studentId || !durationMinutes || durationMinutes < 1) {
+  if (!studentId || durationMinutes === undefined || durationMinutes < 0.1) {
     return res.status(400).json({ error: 'studentId and durationMinutes required' });
   }
 
