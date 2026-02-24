@@ -965,6 +965,26 @@ app.post('/time-log/end', async (req, res) => {
     }
 });
 
+// Update student daily goal
+// Requires: ALTER TABLE students ADD COLUMN IF NOT EXISTS daily_goal_hours NUMERIC(4,2) DEFAULT 3.0;
+app.put('/student/:id/goal', async (req, res) => {
+  const { id } = req.params;
+  const { dailyGoalHours } = req.body;
+  if (dailyGoalHours === undefined || dailyGoalHours < 0.5 || dailyGoalHours > 12) {
+    return res.status(400).json({ error: 'dailyGoalHours must be between 0.5 and 12' });
+  }
+  try {
+    await pool.query(
+      'UPDATE students SET daily_goal_hours = $1 WHERE id = $2',
+      [dailyGoalHours, id]
+    );
+    res.json({ success: true, dailyGoalHours });
+  } catch (error) {
+    console.error('Goal update error:', error);
+    res.status(500).json({ error: 'Failed to update goal' });
+  }
+});
+
 // Get student streaks
 app.get('/student/:id/streaks', async (req, res) => {
   const { id } = req.params;
@@ -1040,6 +1060,12 @@ app.get('/student/:id/stats', async (req, res) => {
     const studentId = req.params.id;
 
     try {
+        // Daily goal
+        const goalResult = await pool.query(
+            'SELECT COALESCE(daily_goal_hours, 3.0) AS daily_goal_hours FROM students WHERE id = $1',
+            [studentId]
+        );
+
         // Today's hours
         const todayResult = await pool.query(`
             SELECT COALESCE(SUM(duration_minutes), 0) / 60.0 as hours
@@ -1163,6 +1189,7 @@ app.get('/student/:id/stats', async (req, res) => {
         const lastWeekHours = parseFloat(lastWeekResult.rows[0].hours) || 0;
 
         res.json({
+            dailyGoalHours: parseFloat(goalResult.rows[0]?.daily_goal_hours) || 3.0,
             todayHours: todayHours,
             yesterdayHours: yesterdayHours,
             todayChange: todayHours - yesterdayHours,
