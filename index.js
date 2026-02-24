@@ -1199,6 +1199,127 @@ app.get('/student/:id/streaks', async (req, res) => {
   }
 });
 
+// Calculate focus score 0-100 based on session depth, consistency, peak alignment, and streak
+app.get('/student/:id/focus-score', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [depthRes, consistencyRes, peakRes, studentRes, streakRes] = await Promise.all([
+      // Session depth: avg duration last 30 days
+      pool.query(`
+        SELECT COALESCE(AVG(duration_minutes), 0) AS avg_minutes
+        FROM time_logs
+        WHERE student_id = $1
+          AND session_start >= CURRENT_DATE - INTERVAL '30 days'
+          AND duration_minutes > 0
+      `, [id]),
+
+      // Consistency: distinct days with sessions in last 7 days
+      pool.query(`
+        SELECT COUNT(DISTINCT DATE(session_start)) AS active_days
+        FROM time_logs
+        WHERE student_id = $1
+          AND session_start >= CURRENT_DATE - INTERVAL '7 days'
+          AND duration_minutes > 0
+      `, [id]),
+
+      // Peak alignment: session counts per hour bucket last 30 days
+      pool.query(`
+        SELECT
+          COUNT(*) AS total_sessions,
+          SUM(CASE WHEN EXTRACT(HOUR FROM session_start) >= 5  AND EXTRACT(HOUR FROM session_start) < 8  THEN 1 ELSE 0 END) AS early_morning,
+          SUM(CASE WHEN EXTRACT(HOUR FROM session_start) >= 8  AND EXTRACT(HOUR FROM session_start) < 12 THEN 1 ELSE 0 END) AS morning,
+          SUM(CASE WHEN EXTRACT(HOUR FROM session_start) >= 12 AND EXTRACT(HOUR FROM session_start) < 17 THEN 1 ELSE 0 END) AS afternoon,
+          SUM(CASE WHEN EXTRACT(HOUR FROM session_start) >= 17 AND EXTRACT(HOUR FROM session_start) < 21 THEN 1 ELSE 0 END) AS evening,
+          SUM(CASE WHEN EXTRACT(HOUR FROM session_start) >= 21 THEN 1 ELSE 0 END) AS late_night
+        FROM time_logs
+        WHERE student_id = $1
+          AND session_start >= CURRENT_DATE - INTERVAL '30 days'
+          AND duration_minutes > 0
+      `, [id]),
+
+      // Student's study_time_preference
+      pool.query(`SELECT study_time_preference FROM students WHERE id = $1`, [id]),
+
+      // Current streak
+      pool.query(`
+        WITH daily AS (
+          SELECT DISTINCT DATE(session_start) AS study_date
+          FROM time_logs WHERE student_id = $1
+        ),
+        numbered AS (
+          SELECT study_date,
+                 study_date - CAST(ROW_NUMBER() OVER (ORDER BY study_date ASC) AS INT) AS grp
+          FROM daily
+        ),
+        groups AS (
+          SELECT grp, COUNT(*) AS streak_len, MAX(study_date) AS last_date
+          FROM numbered GROUP BY grp
+        )
+        SELECT streak_len AS streak FROM groups
+        WHERE last_date >= CURRENT_DATE - INTERVAL '1 day'
+        ORDER BY last_date DESC LIMIT 1
+      `, [id]),
+    ]);
+
+    // 1. Session Depth Score (max 35)
+    const avgMinutes = parseFloat(depthRes.rows[0].avg_minutes) || 0;
+    const sessionDepth = Math.min((avgMinutes / 45) * 35, 35);
+
+    // 2. Consistency Score (max 35)
+    const activeDays = parseInt(consistencyRes.rows[0].active_days) || 0;
+    const consistency = (activeDays / 7) * 35;
+
+    // 3. Peak Alignment Score (max 15)
+    const peakRow = peakRes.rows[0];
+    const totalSessions = parseInt(peakRow.total_sessions) || 0;
+    const preference = studentRes.rows[0]?.study_time_preference || null;
+    let peakAlignment = 15;
+    if (preference && totalSessions > 0) {
+      const buckets = {
+        'Early Morning': parseInt(peakRow.early_morning) || 0,
+        'Morning': parseInt(peakRow.morning) || 0,
+        'Afternoon': parseInt(peakRow.afternoon) || 0,
+        'Evening': parseInt(peakRow.evening) || 0,
+        'Late Night': parseInt(peakRow.late_night) || 0,
+      };
+      peakAlignment = ((buckets[preference] || 0) / totalSessions) * 15;
+    }
+
+    // 4. Streak Bonus (max 15)
+    const currentStreak = streakRes.rows.length > 0 ? parseInt(streakRes.rows[0].streak) : 0;
+    const streakBonus = Math.min(currentStreak, 15);
+
+    const breakdown = {
+      sessionDepth: Math.round(sessionDepth),
+      consistency: Math.round(consistency),
+      peakAlignment: Math.round(peakAlignment),
+      streakBonus: Math.round(streakBonus),
+    };
+
+    const focusScore = breakdown.sessionDepth + breakdown.consistency + breakdown.peakAlignment + breakdown.streakBonus;
+
+    // Insight: lowest-scoring component relative to its max
+    const components = [
+      { key: 'sessionDepth', score: breakdown.sessionDepth, max: 35 },
+      { key: 'consistency', score: breakdown.consistency, max: 35 },
+      { key: 'peakAlignment', score: breakdown.peakAlignment, max: 15 },
+      { key: 'streakBonus', score: breakdown.streakBonus, max: 15 },
+    ];
+    const lowest = components.reduce((a, b) => (a.score / a.max) <= (b.score / b.max) ? a : b);
+    const insights = {
+      sessionDepth: 'Your sessions tend to be short — try studying in 30+ minute blocks for deeper focus.',
+      consistency: 'You study hard some days but skip others — daily consistency is your biggest opportunity.',
+      peakAlignment: "You're often studying outside your peak hours — try shifting sessions to your preferred time.",
+      streakBonus: 'Building a daily streak will significantly boost your focus score.',
+    };
+
+    res.json({ focusScore, breakdown, insight: insights[lowest.key] });
+  } catch (error) {
+    console.error('Focus score error:', error);
+    res.status(500).json({ error: 'Failed to calculate focus score' });
+  }
+});
+
 // Get aggregated study activity for a specific day
 app.get('/student/:id/day/:date', async (req, res) => {
   const { id, date } = req.params;
