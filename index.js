@@ -1320,6 +1320,99 @@ app.get('/student/:id/focus-score', async (req, res) => {
   }
 });
 
+// Find the student's all-time best 7-day focus score window
+app.get('/student/:id/focus-score/best', async (req, res) => {
+  const { id } = req.params;
+  try {
+    // Fetch all sessions: date + duration
+    const result = await pool.query(`
+      SELECT DATE(session_start) AS study_date,
+             duration_minutes
+      FROM time_logs
+      WHERE student_id = $1 AND duration_minutes > 0
+      ORDER BY study_date ASC
+    `, [id]);
+
+    if (result.rows.length === 0) {
+      return res.json({ bestScore: 0, weekOf: null, currentScore: 0 });
+    }
+
+    // Build a map: dateStr -> [durations]
+    const dateMap = {};
+    for (const row of result.rows) {
+      const d = row.study_date.toISOString().split('T')[0];
+      if (!dateMap[d]) dateMap[d] = [];
+      dateMap[d].push(parseFloat(row.duration_minutes));
+    }
+
+    const allDates = Object.keys(dateMap).sort();
+    const earliest = new Date(allDates[0] + 'T12:00:00Z');
+    const today = new Date();
+    today.setUTCHours(12, 0, 0, 0);
+
+    function scoreWindow(windowStart) {
+      const days = [];
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(windowStart);
+        d.setUTCDate(d.getUTCDate() + i);
+        days.push(d.toISOString().split('T')[0]);
+      }
+
+      const durations = days.flatMap(d => dateMap[d] || []);
+      const daysWithSessions = days.filter(d => (dateMap[d] || []).length > 0).length;
+
+      if (durations.length === 0) return 0;
+
+      const avgMinutes = durations.reduce((a, b) => a + b, 0) / durations.length;
+      const sessionDepth = Math.min((avgMinutes / 45) * 35, 35);
+      const consistency = (daysWithSessions / 7) * 35;
+      const peakAlignment = 15;
+
+      // Streak within window: longest consecutive run
+      let maxStreak = 0, streak = 0;
+      for (const d of days) {
+        if ((dateMap[d] || []).length > 0) {
+          streak++;
+          maxStreak = Math.max(maxStreak, streak);
+        } else {
+          streak = 0;
+        }
+      }
+      const streakBonus = Math.min(maxStreak, 15);
+
+      return Math.round(sessionDepth + consistency + peakAlignment + streakBonus);
+    }
+
+    let bestScore = 0;
+    let bestWeekStart = allDates[0];
+
+    // Slide 7-day window from earliest date to today
+    const cursor = new Date(earliest);
+    while (cursor <= today) {
+      const score = scoreWindow(cursor);
+      if (score > bestScore) {
+        bestScore = score;
+        bestWeekStart = cursor.toISOString().split('T')[0];
+      }
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+
+    // Current week score (last 7 days)
+    const thisWeekStart = new Date(today);
+    thisWeekStart.setUTCDate(thisWeekStart.getUTCDate() - 6);
+    const currentScore = scoreWindow(thisWeekStart);
+
+    // Format weekOf as readable string e.g. "Feb 17, 2026"
+    const weekOfDate = new Date(bestWeekStart + 'T12:00:00Z');
+    const weekOf = weekOfDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+
+    res.json({ bestScore, weekOf, currentScore });
+  } catch (error) {
+    console.error('Best focus score error:', error);
+    res.status(500).json({ error: 'Failed to calculate best focus score' });
+  }
+});
+
 // Get aggregated study activity for a specific day
 app.get('/student/:id/day/:date', async (req, res) => {
   const { id, date } = req.params;
