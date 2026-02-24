@@ -18,6 +18,7 @@ const {
   validateEmail
 } = require('./auth');
 
+const crypto = require('crypto');
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -466,6 +467,141 @@ app.post('/auth/login', authLimiter, async (req, res) => {
         console.error('Login error:', error);
         res.status(500).json({ error: 'Login failed', details: error.message });
     }
+});
+
+// Password reset - request reset link
+// Requires table: CREATE TABLE IF NOT EXISTS password_resets (id SERIAL PRIMARY KEY, email TEXT NOT NULL, token TEXT NOT NULL UNIQUE, expires_at TIMESTAMP NOT NULL, used BOOLEAN DEFAULT false, created_at TIMESTAMP DEFAULT NOW());
+app.post('/auth/forgot-password', authLimiter, async (req, res) => {
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
+  try {
+    // Always return success to avoid revealing whether email exists
+    const userResult = await pool.query(
+      'SELECT id FROM students WHERE LOWER(email) = LOWER($1)',
+      [email]
+    );
+
+    if (userResult.rows.length > 0) {
+      const token = crypto.randomBytes(32).toString('hex');
+      const normalizedEmail = email.toLowerCase();
+
+      // Remove any existing reset tokens for this email
+      await pool.query('DELETE FROM password_resets WHERE email = $1', [normalizedEmail]);
+
+      // Insert new reset token (expires in 1 hour)
+      await pool.query(
+        'INSERT INTO password_resets (email, token, expires_at, used) VALUES ($1, $2, NOW() + INTERVAL \'1 hour\', false)',
+        [normalizedEmail, token]
+      );
+
+      // Send reset email via Resend
+      if (process.env.RESEND_API_KEY) {
+        try {
+          const resetLink = `https://oumie.app/reset-password?token=${token}`;
+          await resend.emails.send({
+            from: 'Oumie <noreply@oumie.app>',
+            to: email,
+            subject: 'Reset your Oumie password',
+            html: `
+              <!DOCTYPE html>
+              <html>
+              <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0a0a0a; color: #ffffff; padding: 40px 20px; margin: 0;">
+                <div style="max-width: 480px; margin: 0 auto; background-color: #171717; border-radius: 12px; padding: 40px; border: 1px solid #262626;">
+                  <div style="text-align: center; margin-bottom: 30px;">
+                    <h1 style="color: #3b82f6; font-size: 28px; margin: 0;">🎓 Oumie</h1>
+                    <p style="color: #737373; margin-top: 8px;">Your study companion</p>
+                  </div>
+                  <h2 style="font-size: 20px; margin-bottom: 16px; text-align: center;">Reset your password</h2>
+                  <p style="color: #a3a3a3; text-align: center; margin-bottom: 30px;">
+                    Click the button below to set a new password. This link expires in 1 hour.
+                  </p>
+                  <div style="text-align: center; margin-bottom: 30px;">
+                    <a href="${resetLink}" style="background-color: #3b82f6; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-weight: 600; font-size: 16px; display: inline-block;">
+                      Reset Password
+                    </a>
+                  </div>
+                  <p style="color: #737373; font-size: 14px; text-align: center; margin-bottom: 20px;">
+                    Or copy this link: <a href="${resetLink}" style="color: #3b82f6;">${resetLink}</a>
+                  </p>
+                  <hr style="border: none; border-top: 1px solid #262626; margin: 30px 0;">
+                  <p style="color: #525252; font-size: 12px; text-align: center;">
+                    If you didn't request a password reset, you can safely ignore this email.
+                  </p>
+                </div>
+              </body>
+              </html>
+            `
+          });
+        } catch (emailError) {
+          console.error('Password reset email error:', emailError);
+        }
+      }
+    }
+
+    res.json({ success: true, message: 'If that email exists, a reset link has been sent' });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Failed to process request' });
+  }
+});
+
+// Password reset - verify token validity
+app.get('/auth/verify-reset-token/:token', async (req, res) => {
+  const { token } = req.params;
+  try {
+    const result = await pool.query(
+      'SELECT id FROM password_resets WHERE token = $1 AND used = false AND expires_at > NOW()',
+      [token]
+    );
+    if (result.rows.length === 0) {
+      return res.json({ valid: false, message: 'Reset link is invalid or expired' });
+    }
+    res.json({ valid: true });
+  } catch (error) {
+    console.error('Verify reset token error:', error);
+    res.status(500).json({ error: 'Failed to verify token' });
+  }
+});
+
+// Password reset - set new password
+app.post('/auth/reset-password', authLimiter, async (req, res) => {
+  const { token, newPassword } = req.body;
+  if (!token || !newPassword) {
+    return res.status(400).json({ error: 'Token and new password are required' });
+  }
+
+  try {
+    const resetResult = await pool.query(
+      'SELECT email FROM password_resets WHERE token = $1 AND used = false AND expires_at > NOW()',
+      [token]
+    );
+
+    if (resetResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Reset link is invalid or expired' });
+    }
+
+    const { email } = resetResult.rows[0];
+
+    const passwordHash = await hashPassword(newPassword);
+
+    await pool.query(
+      'UPDATE students SET password_hash = $1 WHERE LOWER(email) = LOWER($2)',
+      [passwordHash, email]
+    );
+
+    await pool.query(
+      'UPDATE password_resets SET used = true WHERE token = $1',
+      [token]
+    );
+
+    res.json({ success: true, message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
 });
 
 // Refresh token endpoint
