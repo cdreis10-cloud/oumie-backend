@@ -1060,7 +1060,7 @@ app.get('/student/:id/streaks', async (req, res) => {
   }
 });
 
-// Get study sessions for a specific day
+// Get aggregated study activity for a specific day
 app.get('/student/:id/day/:date', async (req, res) => {
   const { id, date } = req.params;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -1069,25 +1069,23 @@ app.get('/student/:id/day/:date', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
-        COALESCE(a.title, tl.activity_type, 'Study Session') AS activity_type,
-        tl.duration_minutes,
-        tl.session_start
+        COALESCE(tl.activity_type, 'Study Session') AS activity_type,
+        SUM(tl.duration_minutes) AS total_minutes
       FROM time_logs tl
-      LEFT JOIN assignments a ON tl.assignment_id = a.id
       WHERE tl.student_id = $1
         AND DATE(tl.session_start) = $2::date
         AND tl.duration_minutes > 0
-      ORDER BY tl.session_start DESC
+      GROUP BY COALESCE(tl.activity_type, 'Study Session')
+      ORDER BY total_minutes DESC
     `, [id, date]);
 
-    const sessions = result.rows.map(row => ({
-      activityType: row.activity_type,
-      durationMinutes: parseFloat(row.duration_minutes),
-      startTime: row.session_start,
+    const activities = result.rows.map(row => ({
+      name: row.activity_type,
+      minutes: parseFloat(row.total_minutes),
     }));
-    const totalMinutes = sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
+    const totalMinutes = activities.reduce((sum, a) => sum + a.minutes, 0);
 
-    res.json({ date, totalMinutes, sessions });
+    res.json({ date, totalMinutes, activities });
   } catch (error) {
     console.error('Day detail error:', error);
     res.status(500).json({ error: 'Failed to fetch day details' });
