@@ -537,7 +537,9 @@ app.post('/auth/forgot-password', authLimiter, async (req, res) => {
             `
           });
         } catch (emailError) {
-          console.error('Password reset email error:', emailError);
+          console.error('Password reset email error FULL:', JSON.stringify(emailError, null, 2));
+          console.error('Email error message:', emailError.message);
+          console.error('Email error name:', emailError.name);
         }
       }
     }
