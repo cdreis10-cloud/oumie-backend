@@ -1937,6 +1937,29 @@ app.put('/student/:id/profile-info', async (req, res) => {
   }
 });
 
+// Save onboarding answers
+app.post('/student/:id/onboarding', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal } = req.body;
+  try {
+    await pool.query(`
+      UPDATE students
+      SET year_in_school = $1,
+          major = $2,
+          study_struggle = $3,
+          study_environment = $4,
+          study_time_preference = $5,
+          study_goal = $6,
+          onboarding_completed = true
+      WHERE id = $7
+    `, [year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal, id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Onboarding error:', error);
+    res.status(500).json({ error: 'Failed to save onboarding data' });
+  }
+});
+
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
     console.log('\n🚀 ================================');
