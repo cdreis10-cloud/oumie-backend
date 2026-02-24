@@ -674,7 +674,7 @@ app.post('/auth/logout', authenticateToken, async (req, res) => {
 app.get('/auth/me', authenticateToken, async (req, res) => {
     try {
         const result = await pool.query(
-            'SELECT id, name, email, university, codename, created_at FROM students WHERE id = $1',
+            'SELECT id, name, email, university, codename, created_at, onboarding_completed FROM students WHERE id = $1',
             [req.user.userId]
         );
 
