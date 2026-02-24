@@ -965,6 +965,76 @@ app.post('/time-log/end', async (req, res) => {
     }
 });
 
+// Get student streaks
+app.get('/student/:id/streaks', async (req, res) => {
+  const { id } = req.params;
+  try {
+    // Today's study check
+    const todayResult = await pool.query(`
+      SELECT COALESCE(SUM(duration_minutes), 0) AS total
+      FROM time_logs
+      WHERE student_id = $1 AND DATE(session_start) = CURRENT_DATE
+    `, [id]);
+    const todayComplete = parseFloat(todayResult.rows[0].total) > 0;
+
+    // Last 30 days of study dates (for calendar)
+    const datesResult = await pool.query(`
+      SELECT DISTINCT DATE(session_start)::text AS study_date
+      FROM time_logs
+      WHERE student_id = $1 AND session_start >= CURRENT_DATE - INTERVAL '30 days'
+      ORDER BY study_date DESC
+    `, [id]);
+    const streakDates = datesResult.rows.map(r => r.study_date);
+
+    // Current streak (consecutive days ending today or yesterday)
+    const currentStreakResult = await pool.query(`
+      WITH daily AS (
+        SELECT DISTINCT DATE(session_start) AS study_date
+        FROM time_logs WHERE student_id = $1
+      ),
+      numbered AS (
+        SELECT study_date,
+               study_date - CAST(ROW_NUMBER() OVER (ORDER BY study_date ASC) AS INT) AS grp
+        FROM daily
+      ),
+      groups AS (
+        SELECT grp, COUNT(*) AS streak_len, MAX(study_date) AS last_date
+        FROM numbered GROUP BY grp
+      )
+      SELECT streak_len AS streak FROM groups
+      WHERE last_date >= CURRENT_DATE - INTERVAL '1 day'
+      ORDER BY last_date DESC LIMIT 1
+    `, [id]);
+    const currentStreak = currentStreakResult.rows.length > 0
+      ? parseInt(currentStreakResult.rows[0].streak) : 0;
+
+    // Longest streak ever
+    const longestResult = await pool.query(`
+      WITH daily AS (
+        SELECT DISTINCT DATE(session_start) AS study_date
+        FROM time_logs WHERE student_id = $1
+      ),
+      numbered AS (
+        SELECT study_date,
+               study_date - CAST(ROW_NUMBER() OVER (ORDER BY study_date ASC) AS INT) AS grp
+        FROM daily
+      ),
+      groups AS (SELECT COUNT(*) AS streak_len FROM numbered GROUP BY grp)
+      SELECT COALESCE(MAX(streak_len), 0) AS longest FROM groups
+    `, [id]);
+    const longestStreak = parseInt(longestResult.rows[0].longest) || 0;
+
+    // Streak at risk: no study today + streak active + after 6pm server time
+    const hour = new Date().getHours();
+    const streakAtRisk = !todayComplete && currentStreak > 0 && hour >= 18;
+
+    res.json({ currentStreak, longestStreak, streakDates, todayComplete, streakAtRisk });
+  } catch (error) {
+    console.error('Streaks error:', error);
+    res.status(500).json({ error: 'Failed to fetch streaks' });
+  }
+});
+
 // Get student stats
 app.get('/student/:id/stats', async (req, res) => {
     const studentId = req.params.id;
