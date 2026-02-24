@@ -997,14 +997,19 @@ app.get('/student/:id/streaks', async (req, res) => {
     `, [id]);
     const todayComplete = parseFloat(todayResult.rows[0].total) > 0;
 
-    // Last 30 days of study dates (for calendar)
+    // Activity data for the last 365 days (for calendar month navigation)
     const datesResult = await pool.query(`
-      SELECT DISTINCT DATE(session_start)::text AS study_date
+      SELECT DATE(session_start)::text AS study_date,
+             SUM(duration_minutes) AS total_minutes
       FROM time_logs
-      WHERE student_id = $1 AND session_start >= CURRENT_DATE - INTERVAL '30 days'
+      WHERE student_id = $1 AND session_start >= CURRENT_DATE - INTERVAL '365 days'
+      GROUP BY DATE(session_start)
       ORDER BY study_date DESC
     `, [id]);
-    const streakDates = datesResult.rows.map(r => r.study_date);
+    const streakDates = datesResult.rows.map(r => ({
+      date: r.study_date,
+      minutes: Math.round(parseFloat(r.total_minutes) || 0)
+    }));
 
     // Current streak (consecutive days ending today or yesterday)
     const currentStreakResult = await pool.query(`
@@ -1052,6 +1057,40 @@ app.get('/student/:id/streaks', async (req, res) => {
   } catch (error) {
     console.error('Streaks error:', error);
     res.status(500).json({ error: 'Failed to fetch streaks' });
+  }
+});
+
+// Get study sessions for a specific day
+app.get('/student/:id/day/:date', async (req, res) => {
+  const { id, date } = req.params;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'Invalid date format, use YYYY-MM-DD' });
+  }
+  try {
+    const result = await pool.query(`
+      SELECT
+        COALESCE(a.title, tl.activity_type, 'Study Session') AS activity_type,
+        tl.duration_minutes,
+        tl.session_start
+      FROM time_logs tl
+      LEFT JOIN assignments a ON tl.assignment_id = a.id
+      WHERE tl.student_id = $1
+        AND DATE(tl.session_start) = $2::date
+        AND tl.duration_minutes > 0
+      ORDER BY tl.session_start DESC
+    `, [id, date]);
+
+    const sessions = result.rows.map(row => ({
+      activityType: row.activity_type,
+      durationMinutes: parseFloat(row.duration_minutes),
+      startTime: row.session_start,
+    }));
+    const totalMinutes = sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
+
+    res.json({ date, totalMinutes, sessions });
+  } catch (error) {
+    console.error('Day detail error:', error);
+    res.status(500).json({ error: 'Failed to fetch day details' });
   }
 });
 
