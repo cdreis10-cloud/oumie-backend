@@ -2191,6 +2191,103 @@ app.put('/student/:id/focus-glow', async (req, res) => {
   }
 });
 
+// Study pattern detection
+app.get('/student/:id/patterns', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT
+        EXTRACT(HOUR FROM session_start)::int AS start_hour,
+        duration_minutes,
+        DATE(session_start) AS study_date
+      FROM time_logs
+      WHERE student_id = $1
+        AND duration_minutes > 0
+      ORDER BY session_start
+    `, [id]);
+
+    const sessions = result.rows;
+    const totalSessions = sessions.length;
+
+    if (totalSessions < 5) {
+      return res.json({ pattern: 'NOT_ENOUGH_DATA', message: null });
+    }
+
+    // Count sessions per bucket
+    let lateNight = 0, early = 0, afternoon = 0;
+    let hourCounts = new Array(24).fill(0);
+    let hourWeightedSum = 0;
+
+    for (const s of sessions) {
+      const h = s.start_hour;
+      hourCounts[h]++;
+      hourWeightedSum += h;
+      if (h >= 21) lateNight++;
+      else if (h >= 5 && h < 9) early++;
+      else if (h >= 12 && h < 17) afternoon++;
+    }
+
+    const avgStartHour = hourWeightedSum / totalSessions;
+    const daysWithData = new Set(sessions.map(s => s.study_date.toISOString ? s.study_date.toISOString().split('T')[0] : String(s.study_date))).size;
+
+    // Peak hour
+    const peakHour = hourCounts.indexOf(Math.max(...hourCounts));
+    const peakHourLabel = (() => {
+      if (peakHour === 0) return '12am';
+      if (peakHour === 12) return '12pm';
+      if (peakHour < 12) return `${peakHour}am`;
+      return `${peakHour - 12}pm`;
+    })();
+
+    // Procrastination risk
+    const procrastinationRisk =
+      avgStartHour > 21 || avgStartHour < 3 ? 'high' :
+      avgStartHour > 18 ? 'medium' : 'low';
+
+    // Pattern detection (priority order)
+    let pattern, message, insight, emoji;
+
+    if (lateNight / totalSessions > 0.4) {
+      pattern = 'LATE_NIGHT';
+      message = 'You tend to study late at night';
+      insight = 'Night studying can hurt sleep and retention. Try shifting one session earlier.';
+      emoji = '🌙';
+    } else if (early / totalSessions > 0.4) {
+      pattern = 'EARLY_BIRD';
+      message = "You're an early morning studier";
+      insight = 'Morning study sessions are linked to stronger memory consolidation. Keep it up.';
+      emoji = '🌅';
+    } else if (afternoon / totalSessions > 0.4) {
+      pattern = 'AFTERNOON_FOCUSED';
+      message = 'You do your best work in the afternoon';
+      insight = 'Afternoon focus is common. Protect that 12-5pm window from distractions.';
+      emoji = '☀️';
+    } else if (daysWithData >= 5) {
+      pattern = 'INCONSISTENT';
+      message = 'Your study schedule is unpredictable';
+      insight = 'Students with consistent study times perform 23% better on average.';
+      emoji = '📊';
+    } else {
+      return res.json({ pattern: 'NOT_ENOUGH_DATA', message: null });
+    }
+
+    res.json({
+      pattern,
+      message,
+      insight,
+      emoji,
+      peakHour,
+      peakHourLabel,
+      procrastinationRisk,
+      totalSessions,
+      dataPoints: daysWithData,
+    });
+  } catch (error) {
+    console.error('Patterns error:', error);
+    res.status(500).json({ error: 'Failed to analyze patterns' });
+  }
+});
+
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
     console.log('\n🚀 ================================');
