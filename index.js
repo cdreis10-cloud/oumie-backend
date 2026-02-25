@@ -2152,7 +2152,7 @@ app.put('/student/:id/profile-info', async (req, res) => {
 });
 
 // Save onboarding answers
-app.post('/student/:id/onboarding', authenticateToken, async (req, res) => {
+app.post('/student/:id/onboarding', async (req, res) => {
   const { id } = req.params;
   const { year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal } = req.body;
   try {
