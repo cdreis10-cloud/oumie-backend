@@ -1450,9 +1450,9 @@ app.get('/student/:id/stats', async (req, res) => {
     const studentId = req.params.id;
 
     try {
-        // Daily goal
+        // Daily goal + focus glow setting
         const goalResult = await pool.query(
-            'SELECT COALESCE(daily_goal_hours, 3.0) AS daily_goal_hours FROM students WHERE id = $1',
+            'SELECT COALESCE(daily_goal_hours, 3.0) AS daily_goal_hours, focus_glow_enabled FROM students WHERE id = $1',
             [studentId]
         );
 
@@ -1580,6 +1580,7 @@ app.get('/student/:id/stats', async (req, res) => {
 
         res.json({
             dailyGoalHours: parseFloat(goalResult.rows[0]?.daily_goal_hours) || 3.0,
+            focusGlowEnabled: goalResult.rows[0]?.focus_glow_enabled ?? true,
             todayHours: todayHours,
             yesterdayHours: yesterdayHours,
             todayChange: todayHours - yesterdayHours,
@@ -2171,6 +2172,22 @@ app.post('/student/:id/onboarding', async (req, res) => {
   } catch (error) {
     console.error('Onboarding error:', error);
     res.status(500).json({ error: 'Failed to save onboarding data' });
+  }
+});
+
+// Toggle focus glow
+app.put('/student/:id/focus-glow', async (req, res) => {
+  const { id } = req.params;
+  const { enabled } = req.body;
+  try {
+    await pool.query(
+      'UPDATE students SET focus_glow_enabled = $1 WHERE id = $2',
+      [enabled, id]
+    );
+    res.json({ success: true, focus_glow_enabled: enabled });
+  } catch (error) {
+    console.error('Focus glow toggle error:', error);
+    res.status(500).json({ error: 'Failed to update focus glow setting' });
   }
 });
 
