@@ -2155,7 +2155,7 @@ app.put('/student/:id/profile-info', async (req, res) => {
 // Save onboarding answers
 app.post('/student/:id/onboarding', async (req, res) => {
   const { id } = req.params;
-  const { year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal } = req.body;
+  const { year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal, note_taking, focus_killer } = req.body;
   try {
     await pool.query(`
       UPDATE students
@@ -2165,9 +2165,11 @@ app.post('/student/:id/onboarding', async (req, res) => {
           study_environment = $4,
           study_time_preference = $5,
           study_goal = $6,
+          note_taking = $7,
+          focus_killer = $8,
           onboarding_completed = true
-      WHERE id = $7
-    `, [year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal, id]);
+      WHERE id = $9
+    `, [year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal, note_taking, focus_killer, id]);
     res.json({ success: true });
   } catch (error) {
     console.error('Onboarding error:', error);
