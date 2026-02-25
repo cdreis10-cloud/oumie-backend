@@ -2177,6 +2177,32 @@ app.post('/student/:id/onboarding', async (req, res) => {
   }
 });
 
+// Contact form
+app.post('/contact', async (req, res) => {
+  const { name, email, subject, message } = req.body;
+  if (process.env.RESEND_API_KEY) {
+    try {
+      await resend.emails.send({
+        from: 'Oumie <noreply@oumie.app>',
+        to: 'cdreis10@gmail.com',
+        subject: `Oumie Contact: ${subject}`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 24px;">
+            <h2 style="margin-bottom: 24px; color: #111;">New Contact Message</h2>
+            <p style="margin-bottom: 8px;"><strong>From:</strong> ${name} (${email})</p>
+            <p style="margin-bottom: 8px;"><strong>Subject:</strong> ${subject}</p>
+            <hr style="margin: 20px 0; border: none; border-top: 1px solid #e5e5e5;" />
+            <p style="white-space: pre-wrap; color: #333; line-height: 1.7;">${message}</p>
+          </div>
+        `,
+      });
+    } catch {
+      // fall through — still return success
+    }
+  }
+  res.json({ success: true });
+});
+
 // Toggle focus glow
 app.put('/student/:id/focus-glow', async (req, res) => {
   const { id } = req.params;
