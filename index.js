@@ -2465,6 +2465,17 @@ app.delete('/student/:id/predictor/:assignmentId', async (req, res) => {
   }
 });
 
+// PATCH /student/:id/predictor/:assignmentId/complete — mark assignment completed
+app.patch('/student/:id/predictor/:assignmentId/complete', async (req, res) => {
+  const { id, assignmentId } = req.params;
+  try {
+    await pool.query('UPDATE assignments SET status = $1 WHERE id = $2 AND student_id = $3', ['completed', assignmentId, id]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update assignment' });
+  }
+});
+
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
     console.log('\n🚀 ================================');
