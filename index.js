@@ -2316,6 +2316,155 @@ app.get('/student/:id/patterns', async (req, res) => {
   }
 });
 
+// Baseline hours matrix
+const BASELINE_HOURS = {
+  STEM: { Essay: 5, 'Research Paper': 8, 'Problem Set': 3, 'Lab Report': 4, 'Case Study': 4, Reading: 2, Presentation: 3, 'Exam Prep': 6 },
+  Business: { Essay: 4, 'Research Paper': 6, 'Problem Set': 3, 'Lab Report': 4, 'Case Study': 4, Reading: 2, Presentation: 3, 'Exam Prep': 5 },
+  'Liberal Arts': { Essay: 6, 'Research Paper': 8, 'Problem Set': 3, 'Lab Report': 4, 'Case Study': 4, Reading: 3, Presentation: 3, 'Exam Prep': 5 },
+  'Health Sciences': { Essay: 5, 'Research Paper': 7, 'Problem Set': 3, 'Lab Report': 5, 'Case Study': 4, Reading: 3, Presentation: 3, 'Exam Prep': 7 },
+  Education: { Essay: 4, 'Research Paper': 6, 'Problem Set': 3, 'Lab Report': 4, 'Case Study': 3, Reading: 3, Presentation: 4, 'Exam Prep': 5 },
+  Other: { Essay: 5, 'Research Paper': 7, 'Problem Set': 3, 'Lab Report': 4, 'Case Study': 4, Reading: 2, Presentation: 3, 'Exam Prep': 5 },
+};
+
+// POST /student/:id/predictor — create a new assignment prediction
+app.post('/student/:id/predictor', async (req, res) => {
+  const { id } = req.params;
+  const { subject_type, assignment_type, due_date } = req.body;
+
+  try {
+    // 1. Get baseline hours
+    const subjectData = BASELINE_HOURS[subject_type] || BASELINE_HOURS['Other'];
+    const baselineHours = subjectData[assignment_type] || 5;
+
+    // 2. Get student's historical session data for personalization
+    const sessionResult = await pool.query(`
+      SELECT
+        AVG(duration_minutes) as avg_session_minutes,
+        SUM(duration_minutes) / NULLIF(COUNT(DISTINCT DATE(session_start)), 0) as avg_daily_minutes
+      FROM time_logs
+      WHERE student_id = $1
+      AND session_start >= NOW() - INTERVAL '30 days'
+    `, [id]);
+
+    const avgSessionMinutes = parseFloat(sessionResult.rows[0]?.avg_session_minutes) || 45;
+    const avgDailyMinutes = parseFloat(sessionResult.rows[0]?.avg_daily_minutes) || 60;
+
+    // 3. Apply personalization multiplier based on session depth
+    let multiplier = 1.0;
+    if (avgSessionMinutes < 30) multiplier = 1.3;
+    else if (avgSessionMinutes > 60) multiplier = 0.85;
+
+    const personalizedHours = Math.round(baselineHours * multiplier * 10) / 10;
+
+    // 4. Get student's peak study hour
+    const peakResult = await pool.query(`
+      SELECT EXTRACT(HOUR FROM session_start) as hour, COUNT(*) as cnt
+      FROM time_logs
+      WHERE student_id = $1
+      GROUP BY hour
+      ORDER BY cnt DESC
+      LIMIT 1
+    `, [id]);
+    const peakHour = parseInt(peakResult.rows[0]?.hour) || 9;
+
+    // 5. Build study schedule
+    const dueDate = new Date(due_date);
+    const now = new Date();
+    const availableHours = (dueDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+    const avgDailyHours = avgDailyMinutes / 60;
+    const daysNeeded = Math.ceil(personalizedHours / Math.max(avgDailyHours, 0.5));
+    const isLate = availableHours < personalizedHours;
+
+    // Format peak hour for display
+    const peakHourFormatted = peakHour === 0 ? '12am' : peakHour < 12 ? `${peakHour}am` : peakHour === 12 ? '12pm' : `${peakHour - 12}pm`;
+
+    // Build schedule sessions
+    const schedule = [];
+    let remainingHours = personalizedHours;
+    let scheduleDate = new Date(now);
+    scheduleDate.setHours(peakHour, 0, 0, 0);
+    if (scheduleDate < now) scheduleDate.setDate(scheduleDate.getDate() + 1);
+
+    while (remainingHours > 0 && schedule.length < 14) {
+      const sessionHours = Math.min(remainingHours, Math.max(avgDailyHours, 0.5));
+      schedule.push({
+        date: scheduleDate.toISOString().split('T')[0],
+        startTime: peakHourFormatted,
+        hours: Math.round(sessionHours * 10) / 10
+      });
+      remainingHours -= sessionHours;
+      scheduleDate = new Date(scheduleDate);
+      scheduleDate.setDate(scheduleDate.getDate() + 1);
+    }
+
+    // 6. Calculate start date
+    const startDate = schedule.length > 0 ? schedule[0].date : now.toISOString().split('T')[0];
+
+    // 7. Save to database
+    const result = await pool.query(`
+      INSERT INTO assignments (student_id, title, assignment_type, subject_type, due_date, estimated_hours, personalized_hours, schedule, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'upcoming')
+      RETURNING id
+    `, [
+      id,
+      `${subject_type} ${assignment_type}`,
+      assignment_type,
+      subject_type,
+      due_date,
+      baselineHours,
+      personalizedHours,
+      JSON.stringify(schedule)
+    ]);
+
+    res.json({
+      id: result.rows[0].id,
+      subjectType: subject_type,
+      assignmentType: assignment_type,
+      dueDate: due_date,
+      baselineHours,
+      personalizedHours,
+      daysNeeded,
+      startDate,
+      peakHour: peakHourFormatted,
+      schedule,
+      isLate,
+      status: isLate ? 'late' : 'upcoming'
+    });
+
+  } catch (error) {
+    console.error('Predictor error:', error);
+    res.status(500).json({ error: 'Failed to generate prediction' });
+  }
+});
+
+// GET /student/:id/predictor — get all assignments for this student
+app.get('/student/:id/predictor', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT id, title, subject_type, assignment_type, due_date, estimated_hours, personalized_hours, schedule, status, created_at
+      FROM assignments
+      WHERE student_id = $1
+      AND subject_type IS NOT NULL
+      ORDER BY due_date ASC
+    `, [id]);
+    res.json({ assignments: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch assignments' });
+  }
+});
+
+// DELETE /student/:id/predictor/:assignmentId — delete an assignment
+app.delete('/student/:id/predictor/:assignmentId', async (req, res) => {
+  const { id, assignmentId } = req.params;
+  try {
+    await pool.query('DELETE FROM assignments WHERE id = $1 AND student_id = $2', [assignmentId, id]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete assignment' });
+  }
+});
+
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
     console.log('\n🚀 ================================');
