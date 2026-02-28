@@ -1537,18 +1537,6 @@ app.get('/student/:id/stats', async (req, res) => {
             WHERE student_id = $1
         `, [studentId]);
 
-        // Focus score (percentage of sessions that weren't paused)
-        const focusResult = await pool.query(`
-            SELECT
-                CASE
-                    WHEN COUNT(*) = 0 THEN 0
-                    ELSE ROUND((COUNT(*) FILTER (WHERE was_focused IS NULL OR was_focused = true)::float / COUNT(*)) * 100)
-                END as focus_score
-            FROM time_logs
-            WHERE student_id = $1
-              AND session_start >= CURRENT_DATE - INTERVAL '7 days'
-        `, [studentId]);
-
         // Weekly breakdown (last 7 days)
         const weeklyDataResult = await pool.query(`
             SELECT
@@ -1601,7 +1589,6 @@ app.get('/student/:id/stats', async (req, res) => {
                 total: parseInt(assignmentsResult.rows[0]?.active) || 0,
                 dueThisWeek: parseInt(assignmentsResult.rows[0]?.due_this_week) || 0
             },
-            focusScore: parseInt(focusResult.rows[0]?.focus_score) || 0,
             weeklyData: weeklyDataResult.rows.map(row => ({
                 day: row.day,
                 hours: parseFloat(row.hours) || 0
