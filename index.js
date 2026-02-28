@@ -2487,7 +2487,7 @@ app.get('/student/:id/dna', async (req, res) => {
         [id]
       ),
       pool.query(
-        `SELECT COUNT(*) as total_sessions, AVG(duration_minutes) as avg_session, COUNT(DISTINCT DATE(session_start)) as active_days FROM time_logs WHERE student_id = $1`,
+        `SELECT COUNT(*) as total_sessions, COALESCE(AVG(NULLIF(duration_minutes, 0)), 0) as avg_session, COUNT(DISTINCT DATE(session_start)) as active_days FROM time_logs WHERE student_id = $1`,
         [id]
       ),
       pool.query(
@@ -2654,7 +2654,7 @@ app.get('/student/:id/dna', async (req, res) => {
       burnoutRisk,
       stats: {
         totalSessions,
-        avgSessionMinutes: Math.round(avgSession),
+        avgSessionMinutes: Math.round(parseFloat(timeStats.avg_session) || 0),
         activeDays,
         major: student.major,
       },
