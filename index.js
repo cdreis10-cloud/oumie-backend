@@ -2476,6 +2476,196 @@ app.patch('/student/:id/predictor/:assignmentId/complete', async (req, res) => {
   }
 });
 
+// GET /student/:id/dna — Academic DNA profile
+app.get('/student/:id/dna', async (req, res) => {
+  const { id } = req.params;
+  try {
+    // Step 1 — Fetch all data in parallel
+    const [studentRes, timeStatsRes, topSubjectRes, hourDistRes, recent14Res, prev14Res] = await Promise.all([
+      pool.query(
+        'SELECT major, study_goal, study_struggle, study_time_preference, onboarding_completed FROM students WHERE id = $1',
+        [id]
+      ),
+      pool.query(
+        `SELECT COUNT(*) as total_sessions, AVG(duration_minutes) as avg_session, COUNT(DISTINCT DATE(session_start)) as active_days FROM time_logs WHERE student_id = $1`,
+        [id]
+      ),
+      pool.query(
+        `SELECT subject_type, COUNT(*) as count FROM assignments WHERE student_id = $1 AND status != 'completed' GROUP BY subject_type ORDER BY count DESC LIMIT 1`,
+        [id]
+      ),
+      pool.query(
+        `SELECT AVG(EXTRACT(hour FROM session_start)) as avg_hour, COUNT(DISTINCT DATE(session_start)) as study_days FROM time_logs WHERE student_id = $1 AND session_start >= NOW() - INTERVAL '30 days'`,
+        [id]
+      ),
+      pool.query(
+        `SELECT COUNT(*) as sessions FROM time_logs WHERE student_id = $1 AND session_start >= NOW() - INTERVAL '14 days'`,
+        [id]
+      ),
+      pool.query(
+        `SELECT COUNT(*) as sessions FROM time_logs WHERE student_id = $1 AND session_start >= NOW() - INTERVAL '28 days' AND session_start < NOW() - INTERVAL '14 days'`,
+        [id]
+      ),
+    ]);
+
+    const student = studentRes.rows[0];
+    if (!student) return res.status(404).json({ error: 'Student not found' });
+
+    const timeStats = timeStatsRes.rows[0];
+    const topSubject = topSubjectRes.rows[0] || null;
+    const hourDist = hourDistRes.rows[0];
+    const totalSessions = parseInt(timeStats.total_sessions) || 0;
+    const onboardingDone = student.onboarding_completed;
+
+    // Step 2 — Check unlock status
+    if (totalSessions < 5 || !onboardingDone) {
+      return res.json({
+        locked: true,
+        totalSessions,
+        sessionsNeeded: Math.max(0, 5 - totalSessions),
+        message: onboardingDone
+          ? `${Math.max(0, 5 - totalSessions)} more sessions to unlock`
+          : 'Complete your profile setup first',
+      });
+    }
+
+    // Step 3 — Calculate archetype
+    const avgSession = parseFloat(timeStats.avg_session) || 0;
+    const activeDays = parseInt(timeStats.active_days) || 0;
+    const studyDays = parseInt(hourDist.study_days) || 0;
+    const consistencyScore = studyDays / 30;
+    const consistencyHigh = consistencyScore > 0.4;
+    const avgHour = parseFloat(hourDist.avg_hour) || 12;
+    const timeOfDay = avgHour < 12 ? 'morning' : avgHour <= 18 ? 'afternoon' : 'night';
+
+    let archetype;
+    if (avgSession < 30 && consistencyHigh && timeOfDay === 'morning') {
+      archetype = {
+        name: 'The Early Executor',
+        emoji: '⚡',
+        description: 'You get it done before the world wakes up. Short, sharp sessions in the morning are your signature move.',
+        strengths: ['Disciplined routine', 'Low distraction window', 'Consistent output'],
+        watchOut: 'Your sessions are short — make sure you are going deep enough on complex material.',
+      };
+    } else if (avgSession < 30 && !consistencyHigh) {
+      archetype = {
+        name: 'The Sprinter',
+        emoji: '🚀',
+        description: 'You study in focused bursts. When you are on, you are really on — but the gaps between sessions can hurt retention.',
+        strengths: ['High intensity focus', 'Efficient when motivated', 'Good under pressure'],
+        watchOut: 'Inconsistency is your biggest risk. Try to add at least one session on your off days.',
+      };
+    } else if (avgSession > 60 && timeOfDay === 'night') {
+      archetype = {
+        name: 'The Night Architect',
+        emoji: '🌙',
+        description: 'You do your best thinking after dark. Long, immersive sessions are where you build real understanding.',
+        strengths: ['Deep work capacity', 'Strong retention from long sessions', 'Creative problem solving'],
+        watchOut: 'Sleep deprivation is a real risk. Guard your sleep — it is when memory consolidates.',
+      };
+    } else if (avgSession > 60 && consistencyHigh) {
+      archetype = {
+        name: 'The Marathon Runner',
+        emoji: '🏃',
+        description: 'Long sessions, consistent schedule. You treat studying like training — and it shows.',
+        strengths: ['Deep subject mastery', 'Strong consistency', 'High total hours'],
+        watchOut: 'Burnout risk is real with long sessions. Build in deliberate recovery days.',
+      };
+    } else if (avgSession >= 30 && avgSession <= 60 && consistencyHigh) {
+      archetype = {
+        name: 'The Grinder',
+        emoji: '💎',
+        description: 'Steady, methodical, relentless. You show up every day and put in solid work. This is the most underrated study style.',
+        strengths: ['Compounding progress', 'Low burnout risk', 'Reliable output'],
+        watchOut: 'Routine can become a crutch. Push yourself into harder material periodically.',
+      };
+    } else {
+      archetype = {
+        name: 'The Inconsistent Genius',
+        emoji: '🌊',
+        description: 'Your data shows high variance — some brilliant sessions, some long gaps. The potential is clearly there.',
+        strengths: ['Strong focus when engaged', 'Adaptive learner', 'High ceiling'],
+        watchOut: 'Consistency is the only thing between you and your potential. Build the habit first.',
+      };
+    }
+
+    // Step 4 — Calculate career paths
+    const major = student.major || 'Other';
+    const topSubjectType = topSubject?.subject_type || major;
+    const majorLower = major.toLowerCase();
+    const subjectLower = topSubjectType.toLowerCase();
+    const isStem = ['stem', 'engineering', 'computer science', 'math', 'physics', 'chemistry', 'biology'].some(k => majorLower.includes(k) || subjectLower.includes(k));
+    const isBusiness = ['business', 'economics', 'finance', 'accounting', 'marketing', 'management'].some(k => majorLower.includes(k) || subjectLower.includes(k));
+    const isLiberalArts = ['liberal arts', 'english', 'history', 'philosophy', 'sociology', 'political science', 'education', 'communication'].some(k => majorLower.includes(k) || subjectLower.includes(k));
+    const isHealth = ['health', 'nursing', 'medicine', 'pre-med', 'pharmacy', 'public health', 'kinesiology'].some(k => majorLower.includes(k) || subjectLower.includes(k));
+
+    let careerPaths;
+    if (isStem) {
+      careerPaths = [
+        { title: 'Software Engineering', description: 'Your analytical approach and problem-solving sessions align with engineering thinking.', fit: 'Strong' },
+        { title: 'Data Science & Analytics', description: 'Students with your study pattern excel at data-driven fields requiring deep focus.', fit: 'Strong' },
+        { title: 'Biomedical Research', description: 'Your lab and research sessions suggest comfort with scientific methodology.', fit: 'Good' },
+      ];
+    } else if (isBusiness) {
+      careerPaths = [
+        { title: 'Management Consulting', description: 'Your case study work and analytical sessions match consulting demands.', fit: 'Strong' },
+        { title: 'Finance & Investment', description: 'Your structured approach to problem sets translates well to financial modeling.', fit: 'Strong' },
+        { title: 'Entrepreneurship', description: 'Your self-directed study style mirrors the mindset of founders.', fit: 'Good' },
+      ];
+    } else if (isLiberalArts) {
+      careerPaths = [
+        { title: 'Law', description: 'Your essay and research sessions build exactly the analytical writing skills law requires.', fit: 'Strong' },
+        { title: 'Public Policy', description: 'Your broad reading and research patterns align with policy research work.', fit: 'Good' },
+        { title: 'Journalism & Media', description: 'Your writing-heavy sessions and research depth suit editorial careers.', fit: 'Good' },
+      ];
+    } else if (isHealth) {
+      careerPaths = [
+        { title: 'Medicine', description: 'Your lab and health sciences sessions reflect the dedication medical school demands.', fit: 'Strong' },
+        { title: 'Nursing & Patient Care', description: 'Your study consistency maps to the reliability healthcare roles require.', fit: 'Strong' },
+        { title: 'Public Health', description: 'Your research patterns align with epidemiology and health systems work.', fit: 'Good' },
+      ];
+    } else {
+      careerPaths = [
+        { title: 'Research & Academia', description: 'Your study depth suggests comfort with intellectual rigor.', fit: 'Good' },
+        { title: 'Project Management', description: 'Your consistency and planning approach fits operations roles.', fit: 'Good' },
+        { title: 'Education & Training', description: 'Students who study methodically often make excellent teachers.', fit: 'Possible' },
+      ];
+    }
+
+    // Step 5 — Burnout risk
+    const recentSessions = parseInt(recent14Res.rows[0].sessions) || 0;
+    const prevSessions = parseInt(prev14Res.rows[0].sessions) || 0;
+    let burnoutRisk;
+    if (prevSessions === 0) {
+      burnoutRisk = 'low';
+    } else if (recentSessions < prevSessions * 0.6) {
+      burnoutRisk = 'high';
+    } else if (recentSessions < prevSessions * 0.85) {
+      burnoutRisk = 'medium';
+    } else {
+      burnoutRisk = 'low';
+    }
+
+    // Step 6 — Return full response
+    res.json({
+      locked: false,
+      archetype,
+      careerPaths,
+      burnoutRisk,
+      stats: {
+        totalSessions,
+        avgSessionMinutes: Math.round(avgSession),
+        activeDays,
+        major: student.major,
+      },
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('DNA endpoint error:', error);
+    res.status(500).json({ error: 'Failed to generate DNA profile' });
+  }
+});
+
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
     console.log('\n🚀 ================================');
