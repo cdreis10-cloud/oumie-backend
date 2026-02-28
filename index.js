@@ -1271,6 +1271,14 @@ app.get('/student/:id/focus-score', async (req, res) => {
 
     // 3. Peak Alignment Score (max 15)
     const peakRow = peakRes.rows[0];
+    const totalSessionsForFocus = parseInt(peakRow?.total_sessions) || 0
+    if (totalSessionsForFocus === 0) {
+      return res.json({
+        focusScore: null,
+        locked: true,
+        message: 'Study at least 3 sessions to unlock your Focus Score'
+      })
+    }
     const totalSessions = parseInt(peakRow.total_sessions) || 0;
     const preference = studentRes.rows[0]?.study_time_preference || null;
     let peakAlignment = 15;
