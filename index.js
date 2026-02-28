@@ -1106,6 +1106,7 @@ app.post('/time-log/end', async (req, res) => {
 
 // Update student daily goal
 // Requires: ALTER TABLE students ADD COLUMN IF NOT EXISTS daily_goal_hours NUMERIC(4,2) DEFAULT 3.0;
+// Requires: ALTER TABLE students ADD COLUMN IF NOT EXISTS timezone VARCHAR(100) DEFAULT 'America/New_York';
 app.put('/student/:id/goal', async (req, res) => {
   const { id } = req.params;
   const { dailyGoalHours } = req.body;
