@@ -2487,7 +2487,7 @@ app.get('/student/:id/dna', async (req, res) => {
         [id]
       ),
       pool.query(
-        `SELECT COUNT(*) as total_sessions, COALESCE(AVG(NULLIF(duration_minutes, 0)), 0) as avg_session, COUNT(DISTINCT DATE(session_start)) as active_days FROM time_logs WHERE student_id = $1`,
+        `SELECT COUNT(*) as total_sessions, COALESCE(AVG(NULLIF(duration_minutes, 0)), 0) as avg_session, COALESCE(AVG(duration_minutes), 0) as avg_session_all, COUNT(DISTINCT DATE(session_start)) as active_days FROM time_logs WHERE student_id = $1`,
         [id]
       ),
       pool.query(
@@ -2530,7 +2530,9 @@ app.get('/student/:id/dna', async (req, res) => {
     }
 
     // Step 3 — Calculate archetype
-    const avgSession = parseFloat(timeStats.avg_session) || 0;
+    const rawAvg = parseFloat(timeStats.avg_session_all) || 0;
+    const avgSession = rawAvg;
+    const avgSessionMinutes = rawAvg < 1 && rawAvg > 0 ? Math.round(rawAvg * 60) + ' sec' : Math.round(rawAvg) + ' min';
     const activeDays = parseInt(timeStats.active_days) || 0;
     const studyDays = parseInt(hourDist.study_days) || 0;
     const consistencyScore = studyDays / 30;
@@ -2654,7 +2656,7 @@ app.get('/student/:id/dna', async (req, res) => {
       burnoutRisk,
       stats: {
         totalSessions,
-        avgSessionMinutes: Math.round(parseFloat(timeStats.avg_session) || 0),
+        avgSessionMinutes,
         activeDays,
         major: student.major,
       },
