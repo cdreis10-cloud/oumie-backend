@@ -2461,6 +2461,7 @@ app.get('/student/:id/predictor', async (req, res) => {
       FROM assignments
       WHERE student_id = $1
       AND subject_type IS NOT NULL
+      AND status != 'completed'
       ORDER BY due_date ASC
     `, [id]);
     res.json({ assignments: result.rows });
