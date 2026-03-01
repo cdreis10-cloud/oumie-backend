@@ -2448,6 +2448,14 @@ app.post('/student/:id/predictor', async (req, res) => {
 app.get('/student/:id/predictor', async (req, res) => {
   const { id } = req.params;
   try {
+    await pool.query(`
+      UPDATE assignments
+      SET status = 'completed'
+      WHERE student_id = $1
+      AND status = 'upcoming'
+      AND due_date < NOW()
+      AND subject_type IS NOT NULL
+    `, [id]);
     const result = await pool.query(`
       SELECT id, title, subject_type, assignment_type, due_date, estimated_hours, personalized_hours, schedule, status, created_at
       FROM assignments
@@ -2458,6 +2466,25 @@ app.get('/student/:id/predictor', async (req, res) => {
     res.json({ assignments: result.rows });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch assignments' });
+  }
+});
+
+// GET /student/:id/past-assignments — get completed/past-due assignments
+app.get('/student/:id/past-assignments', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT id, title, subject_type, assignment_type, due_date, personalized_hours, status, created_at
+      FROM assignments
+      WHERE student_id = $1
+      AND subject_type IS NOT NULL
+      AND (status = 'completed' OR due_date < NOW())
+      ORDER BY due_date DESC
+      LIMIT 20
+    `, [id]);
+    res.json({ assignments: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch past assignments' });
   }
 });
 
