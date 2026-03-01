@@ -1204,6 +1204,8 @@ app.get('/student/:id/streaks', async (req, res) => {
 app.get('/student/:id/focus-score', async (req, res) => {
   const { id } = req.params;
   try {
+    const tzResult = await pool.query('SELECT COALESCE(timezone, \'America/New_York\') as tz FROM students WHERE id = $1', [id])
+    const tz = tzResult.rows[0]?.tz || 'America/New_York'
     const [depthRes, consistencyRes, peakRes, studentRes, streakRes] = await Promise.all([
       // Session depth: avg duration last 30 days
       pool.query(`
@@ -1227,11 +1229,11 @@ app.get('/student/:id/focus-score', async (req, res) => {
       pool.query(`
         SELECT
           COUNT(*) AS total_sessions,
-          SUM(CASE WHEN EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') >= 5  AND EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') < 8  THEN 1 ELSE 0 END) AS early_morning,
-          SUM(CASE WHEN EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') >= 8  AND EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') < 12 THEN 1 ELSE 0 END) AS morning,
-          SUM(CASE WHEN EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') >= 12 AND EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') < 17 THEN 1 ELSE 0 END) AS afternoon,
-          SUM(CASE WHEN EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') >= 17 AND EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') < 21 THEN 1 ELSE 0 END) AS evening,
-          SUM(CASE WHEN EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') >= 21 THEN 1 ELSE 0 END) AS late_night
+          SUM(CASE WHEN EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') >= 5  AND EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') < 8  THEN 1 ELSE 0 END) AS early_morning,
+          SUM(CASE WHEN EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') >= 8  AND EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') < 12 THEN 1 ELSE 0 END) AS morning,
+          SUM(CASE WHEN EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') >= 12 AND EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') < 17 THEN 1 ELSE 0 END) AS afternoon,
+          SUM(CASE WHEN EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') >= 17 AND EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') < 21 THEN 1 ELSE 0 END) AS evening,
+          SUM(CASE WHEN EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') >= 21 THEN 1 ELSE 0 END) AS late_night
         FROM time_logs
         WHERE student_id = $1
           AND session_start >= CURRENT_DATE - INTERVAL '30 days'
@@ -1834,16 +1836,18 @@ app.get('/student/:id/learning-fingerprint', async (req, res) => {
   const studentId = req.params.id;
 
   try {
+    const tzResult = await pool.query('SELECT COALESCE(timezone, \'America/New_York\') as tz FROM students WHERE id = $1', [studentId])
+    const tz = tzResult.rows[0]?.tz || 'America/New_York'
     // Get hour-by-hour productivity
     const hourlyData = await pool.query(`
       SELECT
-        EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') as hour,
+        EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') as hour,
         COUNT(*) as session_count,
         AVG(duration_minutes) as avg_duration,
         SUM(duration_minutes) as total_minutes
       FROM time_logs
       WHERE student_id = $1 AND duration_minutes > 0
-      GROUP BY EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix')
+      GROUP BY EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}')
       ORDER BY total_minutes DESC
     `, [studentId]);
 
@@ -2052,6 +2056,8 @@ app.get('/student/:id/insights', async (req, res) => {
   const studentId = req.params.id;
 
   try {
+    const tzResult = await pool.query('SELECT COALESCE(timezone, \'America/New_York\') as tz FROM students WHERE id = $1', [studentId])
+    const tz = tzResult.rows[0]?.tz || 'America/New_York'
     // Peak study days (which days of week have most study time)
     const peakDaysResult = await pool.query(`
       SELECT
@@ -2067,11 +2073,11 @@ app.get('/student/:id/insights', async (req, res) => {
     // Peak hours (what time of day)
     const peakHoursResult = await pool.query(`
       SELECT
-        EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') as hour,
+        EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') as hour,
         SUM(duration_minutes) as total_minutes
       FROM time_logs
       WHERE student_id = $1 AND duration_minutes > 0
-      GROUP BY EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix')
+      GROUP BY EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}')
       ORDER BY total_minutes DESC
       LIMIT 1
     `, [studentId]);
@@ -2220,9 +2226,11 @@ app.put('/student/:id/focus-glow', async (req, res) => {
 app.get('/student/:id/patterns', async (req, res) => {
   const { id } = req.params;
   try {
+    const tzResult = await pool.query('SELECT COALESCE(timezone, \'America/New_York\') as tz FROM students WHERE id = $1', [id])
+    const tz = tzResult.rows[0]?.tz || 'America/New_York'
     const result = await pool.query(`
       SELECT
-        EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix')::int AS start_hour,
+        EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}')::int AS start_hour,
         duration_minutes,
         DATE(session_start) AS study_date
       FROM time_logs
@@ -2329,6 +2337,8 @@ app.post('/student/:id/predictor', async (req, res) => {
   const { subject_type, assignment_type, due_date } = req.body;
 
   try {
+    const tzResult = await pool.query('SELECT COALESCE(timezone, \'America/New_York\') as tz FROM students WHERE id = $1', [id])
+    const tz = tzResult.rows[0]?.tz || 'America/New_York'
     // 1. Get baseline hours
     const subjectData = BASELINE_HOURS[subject_type] || BASELINE_HOURS['Other'];
     const baselineHours = subjectData[assignment_type] || 5;
@@ -2355,7 +2365,7 @@ app.post('/student/:id/predictor', async (req, res) => {
 
     // 4. Get student's peak study hour
     const peakResult = await pool.query(`
-      SELECT EXTRACT(HOUR FROM session_start AT TIME ZONE 'America/Phoenix') as hour, COUNT(*) as cnt
+      SELECT EXTRACT(HOUR FROM session_start AT TIME ZONE '${tz}') as hour, COUNT(*) as cnt
       FROM time_logs
       WHERE student_id = $1
       GROUP BY hour
