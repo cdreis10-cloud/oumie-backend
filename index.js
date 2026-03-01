@@ -297,7 +297,7 @@ app.post('/auth/verify-code', async (req, res) => {
 
 // Signup endpoint with password
 app.post('/auth/signup', authLimiter, async (req, res) => {
-    const { name, email, password, university, universityDomain } = req.body;
+    const { name, email, password, university, universityDomain, timezone } = req.body;
 
     try {
         // Validate input
@@ -364,10 +364,10 @@ app.post('/auth/signup', authLimiter, async (req, res) => {
 
         // Insert student into database
         const studentResult = await pool.query(
-            `INSERT INTO students (name, email, password_hash, university, codename, email_verified, university_domain, university_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            `INSERT INTO students (name, email, password_hash, university, codename, email_verified, university_domain, university_id, timezone)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              RETURNING id, name, email, university, codename, created_at`,
-            [name, email, passwordHash, resolvedUniversity, codename, emailVerified, resolvedDomain, resolvedUniversityId]
+            [name, email, passwordHash, resolvedUniversity, codename, emailVerified, resolvedDomain, resolvedUniversityId, timezone || 'America/New_York']
         );
 
         const newStudent = studentResult.rows[0];
@@ -2151,7 +2151,7 @@ app.put('/student/:id/profile-info', async (req, res) => {
 // Save onboarding answers
 app.post('/student/:id/onboarding', async (req, res) => {
   const { id } = req.params;
-  const { year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal, note_taking, focus_killer } = req.body;
+  const { year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal, note_taking, focus_killer, timezone } = req.body;
   try {
     await pool.query(`
       UPDATE students
@@ -2163,9 +2163,10 @@ app.post('/student/:id/onboarding', async (req, res) => {
           study_goal = $6,
           note_taking = $7,
           focus_killer = $8,
+          timezone = COALESCE($9, timezone),
           onboarding_completed = true
-      WHERE id = $9
-    `, [year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal, note_taking, focus_killer, id]);
+      WHERE id = $10
+    `, [year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal, note_taking, focus_killer, timezone, id]);
     res.json({ success: true });
   } catch (error) {
     console.error('Onboarding error:', error);
