@@ -1277,7 +1277,7 @@ app.get('/student/:id/focus-score', authenticateToken, async (req, res) => {
 
     // 2. Consistency Score (max 35)
     const activeDays = parseInt(consistencyRes.rows[0].active_days) || 0;
-    const consistency = (activeDays / 7) * 35;
+    const consistency = Math.min((activeDays / 7) * 35, 35);
 
     // 3. Peak Alignment Score (max 15)
     const peakRow = peakRes.rows[0];
@@ -1383,7 +1383,7 @@ app.get('/student/:id/focus-score/best', async (req, res) => {
 
       const avgMinutes = durations.reduce((a, b) => a + b, 0) / durations.length;
       const sessionDepth = Math.min((avgMinutes / 45) * 35, 35);
-      const consistency = (daysWithSessions / 7) * 35;
+      const consistency = Math.min((daysWithSessions / 7) * 35, 35);
       const peakAlignment = 15;
 
       // Streak within window: longest consecutive run
