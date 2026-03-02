@@ -21,6 +21,7 @@ const {
 const crypto = require('crypto');
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
+const ical = require('node-ical');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -1108,6 +1109,20 @@ app.post('/time-log/end', async (req, res) => {
 // Update student daily goal
 // Requires: ALTER TABLE students ADD COLUMN IF NOT EXISTS daily_goal_hours NUMERIC(4,2) DEFAULT 3.0;
 // Requires: ALTER TABLE students ADD COLUMN IF NOT EXISTS timezone VARCHAR(100) DEFAULT 'America/New_York';
+// Requires: CREATE TABLE IF NOT EXISTS calendar_assignments (
+//   id SERIAL PRIMARY KEY,
+//   student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+//   title VARCHAR(500) NOT NULL,
+//   due_date TIMESTAMPTZ,
+//   course_name VARCHAR(255),
+//   source_uid VARCHAR(500),
+//   ics_url TEXT,
+//   created_at TIMESTAMPTZ DEFAULT NOW(),
+//   updated_at TIMESTAMPTZ DEFAULT NOW(),
+//   UNIQUE(student_id, source_uid)
+// );
+// Requires: ALTER TABLE students ADD COLUMN IF NOT EXISTS ics_url TEXT;
+// Requires: ALTER TABLE students ADD COLUMN IF NOT EXISTS ics_last_synced TIMESTAMPTZ;
 app.put('/student/:id/goal', async (req, res) => {
   const { id } = req.params;
   const { dailyGoalHours } = req.body;
@@ -2740,6 +2755,89 @@ app.get('/student/:id/dna', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('DNA endpoint error:', error);
     res.status(500).json({ error: 'Failed to generate DNA profile' });
+  }
+});
+
+// POST /student/:id/calendar/sync — save ICS URL and sync assignments
+app.post('/student/:id/calendar/sync', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  if (parseInt(id) !== req.user.userId) return res.status(403).json({ error: 'Access denied' });
+  const { icsUrl } = req.body;
+  if (!icsUrl || !icsUrl.startsWith('http')) return res.status(400).json({ error: 'Valid ICS URL required' });
+  try {
+    const events = await ical.async.fromURL(icsUrl);
+    const assignments = [];
+    for (const event of Object.values(events)) {
+      if (event.type !== 'VEVENT') continue;
+      if (!event.summary) continue;
+      const dueDate = event.due || event.dtend || event.dtstart;
+      if (!dueDate) continue;
+      const courseName = event.location || event.categories?.[0] || null;
+      assignments.push({
+        title: event.summary.trim(),
+        due_date: new Date(dueDate),
+        course_name: courseName,
+        source_uid: event.uid || `${event.summary}-${dueDate}`,
+      });
+    }
+    // Upsert assignments
+    for (const a of assignments) {
+      await pool.query(`
+        INSERT INTO calendar_assignments (student_id, title, due_date, course_name, source_uid, ics_url)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (student_id, source_uid) DO UPDATE SET
+          title = EXCLUDED.title,
+          due_date = EXCLUDED.due_date,
+          course_name = EXCLUDED.course_name,
+          updated_at = NOW()
+      `, [id, a.title, a.due_date, a.course_name, a.source_uid, icsUrl]);
+    }
+    // Save ICS URL and last synced time on student
+    await pool.query(`
+      UPDATE students SET ics_url = $1, ics_last_synced = NOW() WHERE id = $2
+    `, [icsUrl, id]);
+    res.json({ success: true, synced: assignments.length, lastSynced: new Date() });
+  } catch (err) {
+    console.error('ICS sync error:', err);
+    res.status(500).json({ error: 'Failed to fetch or parse ICS URL. Make sure the URL is correct and publicly accessible.' });
+  }
+});
+
+// GET /student/:id/calendar — get all calendar assignments
+app.get('/student/:id/calendar', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  if (parseInt(id) !== req.user.userId) return res.status(403).json({ error: 'Access denied' });
+  try {
+    const [assignments, student] = await Promise.all([
+      pool.query(`
+        SELECT id, title, due_date, course_name, source_uid
+        FROM calendar_assignments
+        WHERE student_id = $1
+        AND due_date >= NOW() - INTERVAL '1 day'
+        ORDER BY due_date ASC
+      `, [id]),
+      pool.query(`SELECT ics_url, ics_last_synced FROM students WHERE id = $1`, [id])
+    ]);
+    res.json({
+      assignments: assignments.rows,
+      icsUrl: student.rows[0]?.ics_url || null,
+      lastSynced: student.rows[0]?.ics_last_synced || null
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch calendar' });
+  }
+});
+
+// DELETE /student/:id/calendar — remove ICS connection
+app.delete('/student/:id/calendar', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  if (parseInt(id) !== req.user.userId) return res.status(403).json({ error: 'Access denied' });
+  try {
+    await pool.query('DELETE FROM calendar_assignments WHERE student_id = $1', [id]);
+    await pool.query('UPDATE students SET ics_url = NULL, ics_last_synced = NULL WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to disconnect calendar' });
   }
 });
 
