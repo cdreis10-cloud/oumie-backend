@@ -1126,9 +1126,12 @@ app.put('/student/:id/goal', async (req, res) => {
 });
 
 // Get student streaks
-app.get('/student/:id/streaks', async (req, res) => {
+app.get('/student/:id/streaks', authenticateToken, async (req, res) => {
   const { id } = req.params;
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     // Today's study check
     const todayResult = await pool.query(`
       SELECT COALESCE(SUM(duration_minutes), 0) AS total
@@ -1201,9 +1204,12 @@ app.get('/student/:id/streaks', async (req, res) => {
 });
 
 // Calculate focus score 0-100 based on session depth, consistency, peak alignment, and streak
-app.get('/student/:id/focus-score', async (req, res) => {
+app.get('/student/:id/focus-score', authenticateToken, async (req, res) => {
   const { id } = req.params;
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     const tzResult = await pool.query('SELECT COALESCE(timezone, \'America/New_York\') as tz FROM students WHERE id = $1', [id])
     const tz = tzResult.rows[0]?.tz || 'America/New_York'
     const [depthRes, consistencyRes, peakRes, studentRes, streakRes] = await Promise.all([
@@ -1457,10 +1463,13 @@ app.get('/student/:id/day/:date', async (req, res) => {
 });
 
 // Get student stats
-app.get('/student/:id/stats', async (req, res) => {
+app.get('/student/:id/stats', authenticateToken, async (req, res) => {
     const studentId = req.params.id;
 
     try {
+        if (parseInt(req.params.id) !== req.user.userId) {
+          return res.status(403).json({ error: 'Access denied' })
+        }
         // Daily goal + focus glow setting
         const goalResult = await pool.query(
             'SELECT COALESCE(daily_goal_hours, 3.0) AS daily_goal_hours, focus_glow_enabled FROM students WHERE id = $1',
@@ -2052,10 +2061,13 @@ app.get('/student/:id/rank', async (req, res) => {
 });
 
 // Insights - peak days, peak hours, top activity
-app.get('/student/:id/insights', async (req, res) => {
+app.get('/student/:id/insights', authenticateToken, async (req, res) => {
   const studentId = req.params.id;
 
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     const tzResult = await pool.query('SELECT COALESCE(timezone, \'America/New_York\') as tz FROM students WHERE id = $1', [studentId])
     const tz = tzResult.rows[0]?.tz || 'America/New_York'
     // Peak study days (which days of week have most study time)
@@ -2155,10 +2167,13 @@ app.put('/student/:id/profile-info', async (req, res) => {
 });
 
 // Save onboarding answers
-app.post('/student/:id/onboarding', async (req, res) => {
+app.post('/student/:id/onboarding', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { year_in_school, major, study_struggle, study_environment, study_time_preference, study_goal, note_taking, focus_killer, timezone } = req.body;
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     await pool.query(`
       UPDATE students
       SET year_in_school = $1,
@@ -2207,10 +2222,13 @@ app.post('/contact', async (req, res) => {
 });
 
 // Toggle focus glow
-app.put('/student/:id/focus-glow', async (req, res) => {
+app.put('/student/:id/focus-glow', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { enabled } = req.body;
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     await pool.query(
       'UPDATE students SET focus_glow_enabled = $1 WHERE id = $2',
       [enabled, id]
@@ -2223,9 +2241,12 @@ app.put('/student/:id/focus-glow', async (req, res) => {
 });
 
 // Study pattern detection
-app.get('/student/:id/patterns', async (req, res) => {
+app.get('/student/:id/patterns', authenticateToken, async (req, res) => {
   const { id } = req.params;
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     const tzResult = await pool.query('SELECT COALESCE(timezone, \'America/New_York\') as tz FROM students WHERE id = $1', [id])
     const tz = tzResult.rows[0]?.tz || 'America/New_York'
     const result = await pool.query(`
@@ -2332,11 +2353,14 @@ const BASELINE_HOURS = {
 };
 
 // POST /student/:id/predictor — create a new assignment prediction
-app.post('/student/:id/predictor', async (req, res) => {
+app.post('/student/:id/predictor', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { subject_type, assignment_type, due_date } = req.body;
 
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     const tzResult = await pool.query('SELECT COALESCE(timezone, \'America/New_York\') as tz FROM students WHERE id = $1', [id])
     const tz = tzResult.rows[0]?.tz || 'America/New_York'
     // 1. Get baseline hours
@@ -2445,9 +2469,12 @@ app.post('/student/:id/predictor', async (req, res) => {
 });
 
 // GET /student/:id/predictor — get all assignments for this student
-app.get('/student/:id/predictor', async (req, res) => {
+app.get('/student/:id/predictor', authenticateToken, async (req, res) => {
   const { id } = req.params;
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     await pool.query(`
       UPDATE assignments
       SET status = 'completed'
@@ -2471,9 +2498,12 @@ app.get('/student/:id/predictor', async (req, res) => {
 });
 
 // GET /student/:id/past-assignments — get completed/past-due assignments
-app.get('/student/:id/past-assignments', async (req, res) => {
+app.get('/student/:id/past-assignments', authenticateToken, async (req, res) => {
   const { id } = req.params;
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     const result = await pool.query(`
       SELECT id, title, subject_type, assignment_type, due_date, personalized_hours, status, created_at
       FROM assignments
@@ -2490,9 +2520,12 @@ app.get('/student/:id/past-assignments', async (req, res) => {
 });
 
 // DELETE /student/:id/predictor/:assignmentId — delete an assignment
-app.delete('/student/:id/predictor/:assignmentId', async (req, res) => {
+app.delete('/student/:id/predictor/:assignmentId', authenticateToken, async (req, res) => {
   const { id, assignmentId } = req.params;
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     await pool.query('DELETE FROM assignments WHERE id = $1 AND student_id = $2', [assignmentId, id]);
     res.json({ success: true });
   } catch (error) {
@@ -2501,9 +2534,12 @@ app.delete('/student/:id/predictor/:assignmentId', async (req, res) => {
 });
 
 // PATCH /student/:id/predictor/:assignmentId/complete — mark assignment completed
-app.patch('/student/:id/predictor/:assignmentId/complete', async (req, res) => {
+app.patch('/student/:id/predictor/:assignmentId/complete', authenticateToken, async (req, res) => {
   const { id, assignmentId } = req.params;
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     await pool.query('UPDATE assignments SET status = $1 WHERE id = $2 AND student_id = $3', ['completed', assignmentId, id]);
     res.json({ success: true });
   } catch (error) {
@@ -2512,9 +2548,12 @@ app.patch('/student/:id/predictor/:assignmentId/complete', async (req, res) => {
 });
 
 // GET /student/:id/dna — Academic DNA profile
-app.get('/student/:id/dna', async (req, res) => {
+app.get('/student/:id/dna', authenticateToken, async (req, res) => {
   const { id } = req.params;
   try {
+    if (parseInt(req.params.id) !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
     // Step 1 — Fetch all data in parallel
     const [studentRes, timeStatsRes, topSubjectRes, hourDistRes, recent14Res, prev14Res] = await Promise.all([
       pool.query(
