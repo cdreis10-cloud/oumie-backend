@@ -97,7 +97,9 @@ app.use(cors({
     const allowedOrigins = [
       'http://localhost:3000',
       'http://localhost:3001',
-      'https://oumie-dashboard.vercel.app'
+      'https://oumie-dashboard.vercel.app',
+      'https://oumie.app',
+      'https://student.oumie.app'
     ];
 
     // Allow Chrome extensions
@@ -109,8 +111,7 @@ app.use(cors({
       return callback(null, true);
     }
 
-    // Allow all for now during development
-    callback(null, true);
+    callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
