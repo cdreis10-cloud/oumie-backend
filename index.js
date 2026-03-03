@@ -2770,14 +2770,23 @@ app.post('/student/:id/calendar/sync', authenticateToken, async (req, res) => {
     for (const event of Object.values(events)) {
       if (event.type !== 'VEVENT') continue;
       if (!event.summary) continue;
-      const dueDate = event.due || event.dtend || event.dtstart;
+      const summaryStr = typeof event.summary === 'object' ? event.summary.val : event.summary;
+      if (!summaryStr || summaryStr.trim() === '{No title}' || summaryStr.trim() === '') continue;
+
+      const dueDate = event.due || event.dtstart || event.dtend;
       if (!dueDate) continue;
-      const courseName = event.location || event.categories?.[0] || null;
+
+      const dueDateObj = dueDate instanceof Date ? dueDate : new Date(dueDate);
+      if (isNaN(dueDateObj.getTime())) continue;
+
+      const courseName = event.location || null;
+      const title = summaryStr.trim();
+
       assignments.push({
-        title: event.summary.trim(),
-        due_date: new Date(dueDate),
+        title,
+        due_date: dueDateObj,
         course_name: courseName,
-        source_uid: event.uid || `${event.summary}-${dueDate}`,
+        source_uid: event.uid || `${title}-${dueDateObj.toISOString()}`,
       });
     }
     // Upsert assignments
@@ -2813,7 +2822,7 @@ app.get('/student/:id/calendar', authenticateToken, async (req, res) => {
         SELECT id, title, due_date, course_name, source_uid
         FROM calendar_assignments
         WHERE student_id = $1
-        AND due_date >= NOW() - INTERVAL '1 day'
+        AND due_date >= NOW() - INTERVAL '30 days'
         ORDER BY due_date ASC
       `, [id]),
       pool.query(`SELECT ics_url, ics_last_synced FROM students WHERE id = $1`, [id])
