@@ -2786,32 +2786,67 @@ app.post('/student/:id/calendar/sync', authenticateToken, async (req, res) => {
       const courseName = event.location || null;
       const title = summaryStr.trim();
 
-      const INCLUSION_KEYWORDS = [
+      const titleLower = title.toLowerCase();
+
+      // If title ends with or contains "- available" or "availability ends", skip it
+      // We only want the "- due" version of each assignment
+      if (titleLower.includes('- available') ||
+          titleLower.includes('availability ends') ||
+          titleLower.includes('- availability')) continue;
+
+      // Campus/social events to always exclude
+      const SOCIAL_EXCLUSIONS = [
+        'volleyball', 'soccer', 'baseball', 'basketball', 'football',
+        'coffee break', 'free shirt', 'goodie bag', 'snack', 'treat',
+        'dog days', 'cats after dark', 'movie night', 'game day',
+        'fair', 'orientation', 'recruitment', 'bonfire', 'crowning',
+        'painting day', 'origami', 'slime', 'crafts', 'cookies',
+        'wellness wednesday', 'zen day', 'kindness rocks', 'spring pause',
+        'fall pause', 'pawse', 'paws', 'therapy pet', 'stress management',
+        'self-care', 'self care', 'gratitude', 'affirmation',
+        'career day', 'career fair', 'job fair', 'club fair',
+        'open house', 'ice cream', 'brushes', 'bubbles', 'cooking',
+        'destination dining', 'meal plan', 'campus pantry',
+        'greek life', 'fraternity', 'sorority', 'homecoming',
+        'library movie', 'board game', 'card game', 'bash at',
+        'bear down friday', 'free screening', 'avengers',
+        'think tank:', 'thrive', 'wayfinders', 'advising',
+        'microsoft teams', 'customization tools',
+        'note taking and reading', 'time management workshop',
+        'college success strategies', 'online classes tips',
+        'financial wellness', 'fafsa', 'housing fair',
+        'stamp making', 'thank you card', 'send a gratitude',
+        'world kindness', 'world gratitude', 'be-leaf',
+        'cals club', 'cals finals', 'cals new student',
+        'cool treats', 'free coffee', 'snack break',
+        'guest speaker'
+      ];
+      const isSocialEvent = SOCIAL_EXCLUSIONS.some(k => titleLower.includes(k));
+      if (isSocialEvent) continue;
+
+      // Academic keyword check - must match at least one to be included
+      // OR pass through if it ends with "- due" which is D2L's assignment format
+      const isDueFormat = titleLower.endsWith('- due') ||
+                          titleLower.endsWith('-due') ||
+                          titleLower.includes(' - due');
+
+      const ACADEMIC_KEYWORDS = [
         'quiz', 'exam', 'test', 'midterm', 'final',
         'assignment', 'homework', 'hw',
         'essay', 'paper', 'report', 'project',
-        'due', 'submit', 'submission',
+        'submit', 'submission',
         'discussion post', 'response', 'reply',
-        'lab report', 'problem set', 'problem',
+        'lab report', 'problem set',
         'reading', 'worksheet', 'exercise',
         'presentation', 'case study', 'research',
         'notes', 'note', 'portfolio', 'journal',
         'reflection', 'review', 'assessment',
-        'task', 'activity', 'chapter'
+        'chapter', 'hbc:', 'study for'
       ];
-      const EXCLUSION_KEYWORDS = [
-        'lecture', 'zoom meeting', 'online meeting',
-        'class meeting', 'office hours', 'webinar',
-        'seminar session', 'recitation', 'lab session',
-        'discussion section', 'course introduction',
-        'syllabus day', 'no class', 'holiday',
-        'spring break', 'fall break', 'canceled'
-      ];
-      const titleLower = title.toLowerCase();
-      const isInclusion = INCLUSION_KEYWORDS.some(k => titleLower.includes(k));
-      const isExclusion = EXCLUSION_KEYWORDS.some(k => titleLower.includes(k));
-      // Inclusion always wins. If neither, show by default.
-      if (!isInclusion && isExclusion) continue;
+      const isAcademic = ACADEMIC_KEYWORDS.some(k => titleLower.includes(k));
+
+      // Keep if: matches academic keywords OR is in D2L "- Due" format
+      if (!isAcademic && !isDueFormat) continue;
 
       assignments.push({
         title,
