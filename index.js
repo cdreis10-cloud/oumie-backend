@@ -2779,8 +2779,16 @@ app.post('/student/:id/calendar/sync', authenticateToken, async (req, res) => {
       const dueDateObj = dueDate instanceof Date ? dueDate : new Date(dueDate);
       if (isNaN(dueDateObj.getTime())) continue;
 
+      const SCHOOL_YEAR_START = new Date('2025-08-01T00:00:00Z');
+      const SCHOOL_YEAR_END = new Date('2026-08-31T23:59:59Z');
+      if (dueDateObj < SCHOOL_YEAR_START || dueDateObj > SCHOOL_YEAR_END) continue;
+
       const courseName = event.location || null;
       const title = summaryStr.trim();
+
+      const EXCLUDE_KEYWORDS = ['lecture', 'zoom', 'class meeting', 'office hours', 'lab session', 'discussion section', 'recitation', 'zoom meeting', 'online meeting', 'webinar', 'seminar session'];
+      const titleLower = title.toLowerCase();
+      if (EXCLUDE_KEYWORDS.some(k => titleLower.includes(k))) continue;
 
       assignments.push({
         title,
@@ -2822,7 +2830,7 @@ app.get('/student/:id/calendar', authenticateToken, async (req, res) => {
         SELECT id, title, due_date, course_name, source_uid
         FROM calendar_assignments
         WHERE student_id = $1
-        AND due_date >= NOW() - INTERVAL '30 days'
+        AND due_date >= '2025-08-01' AND due_date <= '2026-08-31'
         ORDER BY due_date ASC
       `, [id]),
       pool.query(`SELECT ics_url, ics_last_synced FROM students WHERE id = $1`, [id])
