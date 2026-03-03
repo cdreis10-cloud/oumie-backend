@@ -2786,9 +2786,32 @@ app.post('/student/:id/calendar/sync', authenticateToken, async (req, res) => {
       const courseName = event.location || null;
       const title = summaryStr.trim();
 
-      const EXCLUDE_KEYWORDS = ['lecture', 'zoom', 'class meeting', 'office hours', 'lab session', 'discussion section', 'recitation', 'zoom meeting', 'online meeting', 'webinar', 'seminar session'];
+      const INCLUSION_KEYWORDS = [
+        'quiz', 'exam', 'test', 'midterm', 'final',
+        'assignment', 'homework', 'hw',
+        'essay', 'paper', 'report', 'project',
+        'due', 'submit', 'submission',
+        'discussion post', 'response', 'reply',
+        'lab report', 'problem set', 'problem',
+        'reading', 'worksheet', 'exercise',
+        'presentation', 'case study', 'research',
+        'notes', 'note', 'portfolio', 'journal',
+        'reflection', 'review', 'assessment',
+        'task', 'activity', 'chapter'
+      ];
+      const EXCLUSION_KEYWORDS = [
+        'lecture', 'zoom meeting', 'online meeting',
+        'class meeting', 'office hours', 'webinar',
+        'seminar session', 'recitation', 'lab session',
+        'discussion section', 'course introduction',
+        'syllabus day', 'no class', 'holiday',
+        'spring break', 'fall break', 'canceled'
+      ];
       const titleLower = title.toLowerCase();
-      if (EXCLUDE_KEYWORDS.some(k => titleLower.includes(k))) continue;
+      const isInclusion = INCLUSION_KEYWORDS.some(k => titleLower.includes(k));
+      const isExclusion = EXCLUSION_KEYWORDS.some(k => titleLower.includes(k));
+      // Inclusion always wins. If neither, show by default.
+      if (!isInclusion && isExclusion) continue;
 
       assignments.push({
         title,
