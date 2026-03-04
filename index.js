@@ -2788,6 +2788,14 @@ app.post('/student/:id/calendar/sync', authenticateToken, async (req, res) => {
 
       const titleLower = title.toLowerCase();
 
+      const VAGUE_TITLES = [
+        'monday - due', 'tuesday - due', 'wednesday - due',
+        'thursday - due', 'friday - due', 'saturday - due', 'sunday - due',
+        'monday -due', 'tuesday -due', 'wednesday -due',
+        'thursday -due', 'friday -due'
+      ];
+      if (VAGUE_TITLES.includes(titleLower.trim())) continue;
+
       // If title ends with or contains "- available" or "availability ends", skip it
       // We only want the "- due" version of each assignment
       if (titleLower.includes('- available') ||
